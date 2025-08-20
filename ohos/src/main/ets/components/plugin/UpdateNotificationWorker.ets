@@ -5,7 +5,7 @@ import { TaskWorker } from './TaskWorker';
 import { hash } from '@kit.CoreFileKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { NotificationConfig, NotificationService, NotificationType } from './Notifications';
-import BDPlugin from './BDPlugin2';
+import BDPlugin from './BDPlugin';
 
 /**
  * Worker that updates the notification for a task, given a

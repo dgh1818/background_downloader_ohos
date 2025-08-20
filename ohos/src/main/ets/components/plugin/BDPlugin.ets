@@ -9,9 +9,12 @@ import {
   AbilityAware,
   AbilityPluginBinding,
   FlutterLoader,
-  PluginRegistry
+  PluginRegistry,
+  FlutterEngine,
+  BinaryMessenger
 } from "@ohos/flutter_ohos";
 import {
+  Ability,
   abilityAccessCtrl,
   common,
   ErrorCode,
@@ -63,195 +66,69 @@ export class SendableObject {
 }
 
 export default class BDPlugin implements FlutterPlugin, MethodCallHandler, AbilityAware {
-  public backgroundChannel?: MethodChannel = undefined;
-  private firstBackgroundChannel?: MethodChannel = undefined;
-  private uriUtilsChannel?: MethodChannel = undefined;
-  private channel?: MethodChannel = undefined;
-  static  uiContext?: common.UIAbilityContext;
-  //private context: common.Context = getContext();
-  private activityBinding?: AbilityPluginBinding = undefined;
-  private sendableCtx?: sendableContextManager.SendableContext = undefined;
-  private prefs?: dataPreferences.Preferences;
-  private allWorkInfos?: workScheduler.WorkInfo[];
-  static bgChannelByTaskId: Map<string, MethodChannel> = new Map();
-  public static holdingQueue?: HoldingQueue;
-  static readonly TAG = "BackgroundDownloader"
-  static canceledTaskIds = new Set<String>();
-  // <taskId>, acts as flag
-  static cancelUpdateSentForTaskId = new Map<string, number>()
-  // <taskId, timeMillis>
+  public static readonly TAG = "BackgroundDownloader"
+  public static readonly keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
+  public static readonly keyResumeDataMap = "com.bbflight.background_downloader.resumeDataMap.v2"
+  public static readonly keyStatusUpdateMap = "com.bbflight.background_downloader.statusUpdateMap.v2"
+  public static readonly keyProgressUpdateMap = "com.bbflight.background_downloader.progressUpdateMap.v2"
+  public static readonly keyRequireWiFi =
+    "com.bbflight.background_downloader.requireWifi"
+  public static readonly keyCallbackDispatcherRawHandle =
+    "com.bbflight.background_downloader.callbackDispatcherRawHandle"
+  public static readonly keyConfigForegroundFileSize =
+    "com.bbflight.background_downloader.config.foregroundFileSize"
+  public static readonly keyConfigProxyAddress = "com.bbflight.background_downloader.config.proxyAddress"
+  public static readonly keyConfigProxyPort = "com.bbflight.background_downloader.config.proxyPort"
+  public static readonly keyConfigRequestTimeout =
+    "com.bbflight.background_downloader.config.requestTimeout"
+  public static readonly keyConfigCheckAvailableSpace =
+    "com.bbflight.background_downloader.config.checkAvailableSpace"
+  public static readonly keyConfigUseCacheDir = "com.bbflight.background_downloader.config.useCacheDir"
+  public static readonly keyConfigUseExternalStorage =
+    "com.bbflight.background_downloader.config.useExternalStorage"
 
-  public static notificationConfigJsonStrings = new collections.Map<string, string>()
-  public static localResumeData = new collections.Map<string, ResumeData>() // by taskId, for pause notifications
-  // by taskId
-  public static requireWifi = RequireWiFi.asSetByTask
-  public static taskIdsRequiringWiFi = new collections.Set<string>()
-  // ensures correctness when enqueueing task
-
-  public static tasksToReEnqueue = new collections.Set<Task>()
-  public static haveregisteredNotificationCategories = false
-
-  static prefsLock = new ArkTSUtils.locks.AsyncLock();
-  static keyProgressUpdateMap = "com.bbflight.background_downloader.progressUpdateMap.v2"
-  static readonly keyStatusUpdateMap = "com.bbflight.background_downloader.statusUpdateMap.v2"
-  public static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
-
-  // for when WiFi requirement changes
-
-
-  //collections.Map<string, MethodChannel>
-
-  //private requireWifi?:RequireWiFi;
-
-
-
-
-  onAttachedToEngine(binding: FlutterPluginBinding): void {
-    //context = ctx //move to onAttachedToAbility
-
-    //this.uiContext = binding.getApplicationContext();
+  //@SuppressLint("StaticFieldLeak")
+  public static notificationButtonText = new Map<string, string>() // for localization
+  public static firstBackgroundChannel?: MethodChannel;
+  public static bgChannelByTaskId = new Map<string, MethodChannel>()
+  public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
+  public static requireWifi = RequireWiFi.asSetByTask // global setting
+  public static localResumeData = new Map<string, ResumeData>() // by taskId, for pause notifications
+  public static cancelUpdateSentForTaskId = new Map<string, number>() // <taskId, timeMillis>
+  public static pausedTaskIds = new Set<String>() // <taskId>, acts as flag
+  public static canceledTaskIds = new Set<String>() // <taskId>, acts as flag
+  //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
+  public static tasksToReEnqueue = new Set<Task>() // for when WiFi requirement changes
+  public static taskIdsRequiringWiFi = new Set<string>() // ensures correctness when enqueueing task
+  public static notificationConfigJsonStrings = new Map<string, string>() // by taskId
+  public static forceFailPostOnBackgroundChannel = false
+  public static prefsLock = new ArkTSUtils.locks.AsyncLock()
+  public static remainingBytesToDownload = new Map<string, number>() // <taskId, size>
+  public static haveLoggedProxyMessage = false
+  public static holdingQueue?: HoldingQueue
 
 
-    this.backgroundChannel =
-      new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader.background");
-
-    this.channel = new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader")
-    this.channel.setMethodCallHandler(this)
-
-    if (this.firstBackgroundChannel == undefined) {
-      this.firstBackgroundChannel = this.backgroundChannel;
-    }
-
-    this.uriUtilsChannel = new MethodChannel(
-      binding.getBinaryMessenger(),
-      "com.bbflight.background_downloader.uriutils"
-    )
-
-    //this.uriUtilsChannel.setMethodCallHandler(UriUtilsMethodCallHelper(this));
-    let options: preferences.Options = { name: 'DEFAULT' };
-    //this.prefs = preferences.getPreferencesSync(this.uiContext, options);
-
-    workScheduler.obtainAllWorks().then((allWorkInfos: workScheduler.WorkInfo[]) => {
-      this.allWorkInfos = allWorkInfos;
-    });
-
-    // if (this.allWorkInfos?.length==0) {
-    //   this.prefs.deleteSync('keyTasksMap');
-    //   this.prefs.flushSync();
-
-    // }
-    //this.requireWifi = this.prefs.getSync('keyRequireWiFi', 0) as RequireWiFi;
-  }
-
-  onDetachedFromAbility() {
-    //activityBinding?.removeActivityResultListener(this)
-    this.activityBinding = undefined;
-    this.channel?.setMethodCallHandler(undefined)
-    this.channel = undefined;
-  }
-
-  onDetachedFromEngine(binding: FlutterPluginBinding): void {
-
-    this.channel?.setMethodCallHandler(undefined);
-    this.channel = undefined;
-
-    BDPlugin.bgChannelByTaskId = new Map(
-      Array.from(BDPlugin.bgChannelByTaskId).filter(entry => entry[1] !== this.backgroundChannel)
-    );
-
-    if (this.firstBackgroundChannel == this.backgroundChannel) {
-      this.firstBackgroundChannel = undefined;
-    }
-
-    this.backgroundChannel = undefined;
-  }
-
-  async onMethodCall(call: MethodCall, result: MethodResult): Promise<void> {
-
-    console.error('BDPLUGIN' + call.method);
-    switch (call.method) {
-      case 'configHoldingQueue':
-        this.methodConfigHoldingQueue(call, result);
-        break;
-      case 'enqueueAll':
-        this.methodEnqueueAll(call, result);
-        break;
-
-
-      default:
-        result.notImplemented();
-        break;
-    }
-  }
-
-
-  getUniqueClassName(): string {
-    return "BDPlugin"
-  }
-
-  onAttachedToAbility(binding: AbilityPluginBinding) {
-    this.activityBinding = binding;
-    //this.uiContext = binding.getApplicationContext();
-    BDPlugin.uiContext = binding.getAbility().context;
-  }
-
-  /**
-   * Configure the holding queue
-   */
-  private methodConfigHoldingQueue(call: MethodCall, result: MethodResult) {
-    let args: Array<ESObject> = call.args as Array<ESObject>
-    if (args.length == 0) { // deactivate the holding queue
-      BDPlugin.holdingQueue = undefined;
-    } else {
-      BDPlugin.holdingQueue = BDPlugin.holdingQueue ?? new HoldingQueue();
-      BDPlugin.holdingQueue.maxConcurrent = args[0] as number;
-      BDPlugin.holdingQueue.maxConcurrentByHost = args[1] as number;
-      BDPlugin.holdingQueue.maxConcurrentByGroup = args[2] as number
-    }
-    result.success({});
-  }
-
-  private scope?: taskpool.SequenceRunner;
-
-  static methodbackgroundChannel(
-    plugin: BDPlugin | undefined = undefined,
-    taskId: string = "bgd_non_existent_id"
-  ): MethodChannel | undefined {
-    return plugin?.backgroundChannel;
-  }
-
-  static taskRequiresWifi(task: Task): Boolean {
-    return (BDPlugin.requireWifi == RequireWiFi.forAllTasks ||
-      (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
-  }
-
-
-  static doEnqueue(
+  static async doEnqueue(
     context: common.UIAbilityContext,
     task: Task,
     notificationConfigJsonString?: string,
     resumeData?: ResumeData,
     initialDelayMillis: number = 0,
     plugin?: BDPlugin
-  ): boolean {
+  ): Promise<boolean> {
 
-    console.log(`Enqueuing task with id ${task.taskId}`);
-
-    const bgChannel = BDPlugin.methodbackgroundChannel(plugin)
-
+    console.log(BDPlugin.TAG+ 'Enqueuing task with id' + task.taskId);
+    let bgChannel = BDPlugin.methodbackgroundChannel(plugin)
     if (bgChannel != undefined) {
-      BDPlugin.bgChannelByTaskId[task.taskId] = bgChannel;
+      BDPlugin.bgChannelByTaskId.set(task.taskId,bgChannel);
     } else {
-      console.log(BDPlugin.TAG, "Could not find backgroundChannel for taskId ${task.taskId}");
+      console.warn(BDPlugin.TAG, "Could not find backgroundChannel for taskId" +  task.taskId);
     }
-
     BDPlugin.holdingQueue?.hostByTaskId?.set(
       task.taskId,
       task.host()
     ) // store host if we have a HoldingQueue
-
     BDPlugin.canceledTaskIds.delete(task.taskId);
-
     BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId) // reset flag
     let dataBuilder = new collections.Map<string, string>();
     dataBuilder.set(TaskWorker.keyTask, ArkTSUtils.ASON.stringify(task));
@@ -359,6 +236,137 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
     return true;
   }
+
+  public static uiContext?: common.UIAbilityContext;
+  private sendableCtx?: sendableContextManager.SendableContext = undefined;
+  private prefs?: dataPreferences.Preferences;
+
+  private channel?: MethodChannel
+  private backgroundChannel?: MethodChannel
+  private applicationContext?:common.ApplicationContext;
+  // scope?: CoroutineScope
+  private binaryMessenger?: BinaryMessenger
+  private activity?:Ability;
+
+
+
+
+  onAttachedToEngine(binding: FlutterPluginBinding): void {
+    //context = ctx //move to onAttachedToAbility
+
+    this.applicationContext = binding.getApplicationContext().getApplicationContext();
+    this.binaryMessenger = binding.getBinaryMessenger()
+    this.backgroundChannel =
+      new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader.background");
+    if (BDPlugin.firstBackgroundChannel == undefined) {
+      BDPlugin.firstBackgroundChannel = this.backgroundChannel;
+    }
+    this.channel = new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader")
+    this.channel?.setMethodCallHandler(this)
+    let uriUtilsChannel = new MethodChannel(
+      binding.getBinaryMessenger(),
+      "com.bbflight.background_downloader.uriutils"
+    )
+    let options: preferences.Options = { name: 'DEFAULT' };
+    let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+    let allWorkInfos:workScheduler.WorkInfo[];
+
+    workScheduler.obtainAllWorks().then((allWorkInfos: workScheduler.WorkInfo[]) => {
+      if (allWorkInfos.length == 0) {
+        BDPlugin.prefsLock.lockAsync(() => {
+          prefs.deleteSync(BDPlugin.keyTasksMap);
+          prefs.flushSync();
+        })
+      }
+    });
+
+    BDPlugin.requireWifi = prefs.getSync('keyRequireWiFi', 0) as RequireWiFi;
+  }
+
+  onDetachedFromEngine(binding: FlutterPluginBinding): void {
+    this.channel?.setMethodCallHandler(undefined);
+    this.channel = undefined;
+
+    BDPlugin.bgChannelByTaskId = new Map(
+      Array.from(BDPlugin.bgChannelByTaskId).filter(entry => entry[1] !== this.backgroundChannel)
+    );
+
+    if (BDPlugin.firstBackgroundChannel == this.backgroundChannel) {
+      BDPlugin.firstBackgroundChannel = undefined;
+    }
+
+    this.backgroundChannel = undefined;
+    this.binaryMessenger = undefined;
+  }
+
+
+
+
+
+  async onMethodCall(call: MethodCall, result: MethodResult): Promise<void> {
+
+    console.error('BDPLUGIN' + call.method);
+    switch (call.method) {
+      case 'configHoldingQueue':
+        this.methodConfigHoldingQueue(call, result);
+        break;
+      case 'enqueueAll':
+        this.methodEnqueueAll(call, result);
+        break;
+
+
+      default:
+        result.notImplemented();
+        break;
+    }
+  }
+
+
+  getUniqueClassName(): string {
+    return "BDPlugin"
+  }
+
+  onAttachedToAbility(binding: AbilityPluginBinding) {
+    //handleIntent(binding.activity.intent)
+    BDPlugin.uiContext = binding.getAbility().context;
+  }
+
+  onDetachedFromAbility() {
+
+  }
+
+  /**
+   * Configure the holding queue
+   */
+  private methodConfigHoldingQueue(call: MethodCall, result: MethodResult) {
+    let args: Array<ESObject> = call.args as Array<ESObject>
+    if (args.length == 0) { // deactivate the holding queue
+      BDPlugin.holdingQueue = undefined;
+    } else {
+      BDPlugin.holdingQueue = BDPlugin.holdingQueue ?? new HoldingQueue();
+      BDPlugin.holdingQueue.maxConcurrent = args[0] as number;
+      BDPlugin.holdingQueue.maxConcurrentByHost = args[1] as number;
+      BDPlugin.holdingQueue.maxConcurrentByGroup = args[2] as number
+    }
+    result.success({});
+  }
+
+  private scope?: taskpool.SequenceRunner;
+
+  static methodbackgroundChannel(
+    plugin: BDPlugin | undefined = undefined,
+    taskId: string = "bgd_non_existent_id"
+  ): MethodChannel | undefined {
+    return plugin?.backgroundChannel;
+  }
+
+  static taskRequiresWifi(task: Task): Boolean {
+    return (BDPlugin.requireWifi == RequireWiFi.forAllTasks ||
+      (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
+  }
+
+
+
 
 
   /**
@@ -499,7 +507,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
             success = BDPlugin.doEnqueue(BDPlugin.uiContext!, task, notificationConfigJsonString, undefined, BDPlugin);
           } else {
             console.log(`Enqueueing task with id ${task.taskId} to the HoldingQueue`);
-            BDPlugin.oldingQueue.add(new EnqueueItem(
+            BDPlugin.holdingQueue.add(new EnqueueItem(
               BDPlugin.uiContext,
               task,
               notificationConfigJsonString: notificationConfigJsonString,

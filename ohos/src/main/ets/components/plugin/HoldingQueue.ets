@@ -1,5 +1,5 @@
 import { common } from "@kit.AbilityKit";
-import BDPlugin from "./BDPlugin2";
+import BDPlugin from "./BDPlugin";
 import { ResumeData, Task, TaskStatus } from "./Models";
 import { TaskWorker } from "./TaskWorker";
 import { preferences } from "@kit.ArkData";
