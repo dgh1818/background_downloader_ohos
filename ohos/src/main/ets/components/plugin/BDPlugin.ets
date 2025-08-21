@@ -23,7 +23,8 @@ import {
   sendableContextManager,
   StartOptions,
   UIAbility,
-  Want
+  Want,
+  wantConstant
 } from "@kit.AbilityKit";
 import { hash } from '@kit.CoreFileKit';
 import { BusinessError } from '@ohos.base';
@@ -37,7 +38,7 @@ import { workScheduler } from "@kit.BackgroundTasksKit";
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
 import { NotificationConfig } from './Notifications'
 import { ISendable, ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
-import { TaskWorker } from "./TaskWorker";
+import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 
 @Sendable
 export class SendableObject {
@@ -86,27 +87,35 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static readonly keyConfigUseCacheDir = "com.bbflight.background_downloader.config.useCacheDir"
   public static readonly keyConfigUseExternalStorage =
     "com.bbflight.background_downloader.config.useExternalStorage"
-
   //@SuppressLint("StaticFieldLeak")
-  public static notificationButtonText = new Map<string, string>() // for localization
+  public static notificationButtonText = new Map<string, string>()
+  // for localization
   public static firstBackgroundChannel?: MethodChannel;
   public static bgChannelByTaskId = new Map<string, MethodChannel>()
   public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
-  public static requireWifi = RequireWiFi.asSetByTask // global setting
-  public static localResumeData = new Map<string, ResumeData>() // by taskId, for pause notifications
-  public static cancelUpdateSentForTaskId = new Map<string, number>() // <taskId, timeMillis>
-  public static pausedTaskIds = new Set<String>() // <taskId>, acts as flag
-  public static canceledTaskIds = new Set<String>() // <taskId>, acts as flag
+  public static requireWifi = RequireWiFi.asSetByTask
+  // global setting
+  public static localResumeData = new Map<string, ResumeData>()
+  // by taskId, for pause notifications
+  public static cancelUpdateSentForTaskId = new Map<string, number>()
+  // <taskId, timeMillis>
+  public static pausedTaskIds = new Set<String>()
+  // <taskId>, acts as flag
+  public static canceledTaskIds = new Set<String>()
+  // <taskId>, acts as flag
   //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
-  public static tasksToReEnqueue = new Set<Task>() // for when WiFi requirement changes
-  public static taskIdsRequiringWiFi = new Set<string>() // ensures correctness when enqueueing task
-  public static notificationConfigJsonStrings = new Map<string, string>() // by taskId
+  public static tasksToReEnqueue = new Set<Task>()
+  // for when WiFi requirement changes
+  public static taskIdsRequiringWiFi = new Set<string>()
+  // ensures correctness when enqueueing task
+  public static notificationConfigJsonStrings = new Map<string, string>()
+  // by taskId
   public static forceFailPostOnBackgroundChannel = false
   public static prefsLock = new ArkTSUtils.locks.AsyncLock()
-  public static remainingBytesToDownload = new Map<string, number>() // <taskId, size>
+  public static remainingBytesToDownload = new Map<string, number>()
+  // <taskId, size>
   public static haveLoggedProxyMessage = false
   public static holdingQueue?: HoldingQueue
-
 
   static async doEnqueue(
     context: common.UIAbilityContext,
@@ -117,12 +126,12 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     plugin?: BDPlugin
   ): Promise<boolean> {
 
-    console.log(BDPlugin.TAG+ 'Enqueuing task with id' + task.taskId);
+    console.log(BDPlugin.TAG + 'Enqueuing task with id' + task.taskId);
     let bgChannel = BDPlugin.methodbackgroundChannel(plugin)
     if (bgChannel != undefined) {
-      BDPlugin.bgChannelByTaskId.set(task.taskId,bgChannel);
+      BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
     } else {
-      console.warn(BDPlugin.TAG, "Could not find backgroundChannel for taskId" +  task.taskId);
+      console.warn(BDPlugin.TAG, "Could not find backgroundChannel for taskId" + task.taskId);
     }
     BDPlugin.holdingQueue?.hostByTaskId?.set(
       task.taskId,
@@ -130,26 +139,13 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     ) // store host if we have a HoldingQueue
     BDPlugin.canceledTaskIds.delete(task.taskId);
     BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId) // reset flag
-    let dataBuilder = new collections.Map<string, string>();
-    dataBuilder.set(TaskWorker.keyTask, ArkTSUtils.ASON.stringify(task));
+    let dataBuilder = new collections.Map<string, string | number>();
+
 
     if (notificationConfigJsonString != undefined) {
-      dataBuilder.set(
-        TaskWorker.keyNotificationConfig,
-        notificationConfigJsonString
-      )
       BDPlugin.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
     }
-
-    if (resumeData != undefined) {
-      dataBuilder.set(TaskWorker.keyResumeDataData, resumeData.data)
-      dataBuilder.set(TaskWorker.keyStartByte, String(resumeData.requiredStartByte))
-      if (resumeData.eTag) {
-        dataBuilder.set(TaskWorker.keyETag, resumeData.eTag)
-      }
-    }
-
-    let data = ArkTSUtils.ASON.stringify(dataBuilder)
+    let data = ArkTSUtils.ASON.stringify(dataBuilder) //To Do
 
     let taskRequiresWifi = BDPlugin.taskRequiresWifi(task)
     if (taskRequiresWifi) {
@@ -160,47 +156,54 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     // if (taskRequiresWifi) NetworkType.UNMETERED else NetworkType.CONNECTED
     // ).build()
     let network_condition: workScheduler.NetworkType;
-
     if (taskRequiresWifi) {
       network_condition = workScheduler.NetworkType.NETWORK_TYPE_WIFI
     } else {
       network_condition = workScheduler.NetworkType.NETWORK_TYPE_ANY
     }
 
-    let input_ability_name: string;
+    let WorkerName: string;
 
     switch (task.taskType) {
       case "ParallelDownloadTask":
-        input_ability_name = 'ParallelDownloadTaskWorker'
+        WorkerName = 'ParallelDownloadTaskWorker'
         break;
       case "DownloadTask":
-        input_ability_name = 'DownloadTaskWorker'
+        WorkerName = 'DownloadTaskWorker'
         break;
       case "UriDownloadTask":
-        input_ability_name = 'DownloadTaskWorker'
+        WorkerName = 'DownloadTaskWorker'
         break;
       case "UploadTask":
-        input_ability_name = 'UploadTaskWorker'
+        WorkerName = 'UploadTaskWorker'
         break;
       case "UriUploadTask":
-        input_ability_name = 'UploadTaskWorker'
+        WorkerName = 'UploadTaskWorker'
         break;
       case "MultiUploadTask":
-        input_ability_name = 'UploadTaskWorkerr'
+        WorkerName = 'UploadTaskWorkerr'
         break;
       case "DataTask":
-        input_ability_name = 'DataTaskWorker'
+        WorkerName = 'DataTaskWorker'
         break;
       default:
-        console.error(BDPlugin.TAG, 'Unknown taskType: $task.taskType')
-        input_ability_name = ''
+        console.error(BDPlugin.TAG, 'Unknown taskType' + task.taskType);
+        WorkerName = '';
+        return false;
     }
 
     let requestBuilder: workScheduler.WorkInfo = {
       workId: parseInt(task.taskId),
       bundleName: 'background_downloader',
-      abilityName: input_ability_name,
+      abilityName: WorkerName,
       networkType: network_condition,
+      parameters: {
+        [TaskWorkerKey.keyTask]:ArkTSUtils.ASON.stringify(task),
+        [TaskWorkerKey.keyNotificationConfig]:notificationConfigJsonString??'',
+        [TaskWorkerKey.keyResumeDataData]:resumeData?resumeData.data:'',
+        [TaskWorkerKey.keyStartByte]:resumeData?resumeData.requiredStartByte:-1,
+        [TaskWorkerKey.keyETag]:resumeData?resumeData.eTag??'':'',
+      }
     }
 
     // if (initialDelayMillis != 0) {
@@ -224,15 +227,24 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       // }
 
       if (BDPlugin.holdingQueue?.enqueuedTaskIds?.includes(task.taskId) != true) {
-        processStatusUpdate(task, TaskStatus.enqueued, prefs, BDPlugin.uiContext)
+        TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, prefs, undefined,undefined,undefined,undefined,undefined,undefined,BDPlugin.uiContext)
+
       }
     } catch (e) {
-      console.error(BDPlugin.TAG, 'Unable to start background request for taskId $task.taskId in operation: $operation')
+      console.error(BDPlugin.TAG, 'Unable to start background request for taskId'+ task.taskId + 'in operation:');
       return false
     }
 
+    BDPlugin.prefsLock.lockAsync(() => {
+      let options: preferences.Options = { name: 'DEFAULT' };
+      let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options)
 
-    //val dataBuilder = Data.Builder().putString(TaskWorker.keyTask, JSON.stringify(task))
+      let tasksMap = getTaskMap(prefs)
+      tasksMap.set(task.taskId,task);
+      prefs.putSync(BDPlugin.keyTasksMap,JSON.stringify(tasksMap));
+      prefs.flushSync();
+
+    });
 
     return true;
   }
@@ -240,16 +252,12 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static uiContext?: common.UIAbilityContext;
   private sendableCtx?: sendableContextManager.SendableContext = undefined;
   private prefs?: dataPreferences.Preferences;
-
   private channel?: MethodChannel
   private backgroundChannel?: MethodChannel
-  private applicationContext?:common.ApplicationContext;
+  private applicationContext?: common.ApplicationContext;
   // scope?: CoroutineScope
   private binaryMessenger?: BinaryMessenger
-  private activity?:Ability;
-
-
-
+  private activity?: Ability;
 
   onAttachedToEngine(binding: FlutterPluginBinding): void {
     //context = ctx //move to onAttachedToAbility
@@ -269,7 +277,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     )
     let options: preferences.Options = { name: 'DEFAULT' };
     let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
-    let allWorkInfos:workScheduler.WorkInfo[];
+    let allWorkInfos: workScheduler.WorkInfo[];
 
     workScheduler.obtainAllWorks().then((allWorkInfos: workScheduler.WorkInfo[]) => {
       if (allWorkInfos.length == 0) {
@@ -298,9 +306,6 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     this.backgroundChannel = undefined;
     this.binaryMessenger = undefined;
   }
-
-
-
 
 
   async onMethodCall(call: MethodCall, result: MethodResult): Promise<void> {
@@ -364,9 +369,6 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     return (BDPlugin.requireWifi == RequireWiFi.forAllTasks ||
       (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
   }
-
-
-
 
 
   /**
@@ -476,7 +478,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   // return true
   // }
 
-  private methodEnqueueAllTask(call: MethodCall, result: MethodResult) {
+  private methodEnqueueAll(call: MethodCall, result: MethodResult) {
     let args: Array<ESObject> = call.args as Array<ESObject>;
     let taskListJsonString = args[0] as string;
     let notificationConfigListJsonString = args[1] as string
@@ -510,207 +512,219 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
             BDPlugin.holdingQueue.add(new EnqueueItem(
               BDPlugin.uiContext,
               task,
-              notificationConfigJsonString: notificationConfigJsonString,
-              undefined,
-              plugin: plugin
-            ));
+              notificationConfigJsonString:
+            notificationConfigJsonString,
+            undefined,
+            plugin:
+            plugin
+            )
+            )
+            ;
             processStatusUpdate(task, TaskStatus.enqueued, pref, BDPlugin.uiContext);
             success = true;
           }
-/*
-          try {
-                        try {
-                            URL(task.url)
-                            URLDecoder.decode(task.url, "UTF-8")
-                        } catch (_: MalformedURLException) {
-                            Log.i(TAG, "MalformedURLException for taskId ${task.taskId}")
-                            results.add(false)
-                            continue
-                        } catch (_: IllegalArgumentException) {
-                            Log.i(TAG, "Could not url-decode url for taskId ${task.taskId}")
-                            results.add(false)
-                            continue
-                        }
-                        // Enqueue or add to HoldingQueue
-                        success = if (holdingQueue == null) {
-                            doEnqueue(
-                                applicationContext,
-                                task,
-                                notificationConfigJsonString,
-                                resumeData = null,
-                                plugin = plugin
-                            )
-                        }
-          else
+          /*
+                    try {
+                                  try {
+                                      URL(task.url)
+                                      URLDecoder.decode(task.url, "UTF-8")
+                                  } catch (_: MalformedURLException) {
+                                      Log.i(TAG, "MalformedURLException for taskId ${task.taskId}")
+                                      results.add(false)
+                                      continue
+                                  } catch (_: IllegalArgumentException) {
+                                      Log.i(TAG, "Could not url-decode url for taskId ${task.taskId}")
+                                      results.add(false)
+                                      continue
+                                  }
+                                  // Enqueue or add to HoldingQueue
+                                  success = if (holdingQueue == null) {
+                                      doEnqueue(
+                                          applicationContext,
+                                          task,
+                                          notificationConfigJsonString,
+                                          resumeData = null,
+                                          plugin = plugin
+                                      )
+                                  }
+                    else
+                    {
+                      Log.i(TAG, "Enqueueing task with id ${task.taskId} to the HoldingQueue")
+                      holdingQueue?.add(
+                        EnqueueItem(
+                          context = applicationContext,
+                          task = task,
+                          notificationConfigJsonString = notificationConfigJsonString,
+                          resumeData = null,
+                          plugin = plugin
+                        )
+                      )
+                      processStatusUpdate(
+                        task,
+                        TaskStatus.enqueued,
+                        PreferenceManager.getDefaultSharedPreferences(applicationContext),
+                        context = applicationContext
+                      )
+                      true
+                    }
+                  } catch (e: Exception) {
+                    Log.e(TAG, "Error processing task ${task.taskId}: ${e.message}")
+                  }
+                  results.add(success)
+                }
+                result.success(results)
+              } catch (e: Exception) {
+                Log.e(TAG, "Error decoding JSON: ${e.message}")
+                result.success(emptyList<Boolean>()) // Return an empty list on error
+              }
+            }
+            */
+
+          /**
+           * Starts a list of tasks, passed as a JSON string representing a list of [Task] objects.
+           *
+           * Returns a list of booleans indicating the success of each individual enqueue operation.
+           */
+          private
+          methodEnqueueAll(call:
+          MethodCall, result:
+          MethodResult
+          )
           {
-            Log.i(TAG, "Enqueueing task with id ${task.taskId} to the HoldingQueue")
-            holdingQueue?.add(
-              EnqueueItem(
-                context = applicationContext,
-                task = task,
-                notificationConfigJsonString = notificationConfigJsonString,
-                resumeData = null,
-                plugin = plugin
-              )
-            )
-            processStatusUpdate(
-              task,
-              TaskStatus.enqueued,
-              PreferenceManager.getDefaultSharedPreferences(applicationContext),
-              context = applicationContext
-            )
-            true
+            if (this.scope == undefined) {
+              result.success(new Array<boolean>())
+              return;
+            }
+
+            this.scope.execute()
+            //         let plugin = this;
+            //         scope!!.launch(Dispatchers.IO) {
+            //             val args = call.arguments as List<*>
+            //             val taskListJsonString = args[0] as String
+            //             val notificationConfigListJsonString = args[1] as String
+            //             try {
+            //                 val tasks = Json.decodeFromString<List<Task>>(taskListJsonString)
+            //                 val notificationConfigs =
+            //                     Json.decodeFromString<List<NotificationConfig?>>(
+            //                         notificationConfigListJsonString
+            //                     )
+            //                 val results = mutableListOf<Boolean>()
+            //                 for ((index, task) in tasks.withIndex()) {
+            //                     val notificationConfig = notificationConfigs.getOrNull(index)
+            //                     val notificationConfigJsonString =
+            //                         notificationConfig?.let { Json.encodeToString(it) }
+            //   var success = false
+            //   try {
+            //   try {
+            //   URL(task.url)
+            //   URLDecoder.decode(task.url, "UTF-8")
+            // } catch (_: MalformedURLException) {
+            //   Log.i(TAG, "MalformedURLException for taskId ${task.taskId}")
+            //   results.add(false)
+            //   continue
+            // } catch (_: IllegalArgumentException) {
+            //   Log.i(TAG, "Could not url-decode url for taskId ${task.taskId}")
+            //   results.add(false)
+            //   continue
+            // }
+            // // Enqueue or add to HoldingQueue
+            // success = if (holdingQueue == null) {
+            //   doEnqueue(
+            //     applicationContext,
+            //     task,
+            //     notificationConfigJsonString,
+            //     resumeData = null,
+            //     plugin = plugin
+            //   )
+            // } else {
+            //   Log.i(TAG, "Enqueueing task with id ${task.taskId} to the HoldingQueue")
+            //   holdingQueue?.add(
+            //     EnqueueItem(
+            //       context = applicationContext,
+            //       task = task,
+            //       notificationConfigJsonString = notificationConfigJsonString,
+            //       resumeData = null,
+            //       plugin = plugin
+            //     )
+            //   )
+            //   processStatusUpdate(
+            //     task,
+            //     TaskStatus.enqueued,
+            //     PreferenceManager.getDefaultSharedPreferences(applicationContext),
+            //     context = applicationContext
+            //   )
+            //   true
+            // }
+            // } catch (e: Exception) {
+            //   Log.e(TAG, "Error processing task ${task.taskId}: ${e.message}")
+            // }
+            // results.add(success)
+            // }
+            // result.success(results)
+            // } catch (e: Exception) {
+            //   Log.e(TAG, "Error decoding JSON: ${e.message}")
+            //   result.success(emptyList<Boolean>()) // Return an empty list on error
+            // }
+            // }
           }
-        } catch (e: Exception) {
-          Log.e(TAG, "Error processing task ${task.taskId}: ${e.message}")
         }
-        results.add(success)
-      }
-      result.success(results)
-    } catch (e: Exception) {
-      Log.e(TAG, "Error decoding JSON: ${e.message}")
-      result.success(emptyList<Boolean>()) // Return an empty list on error
-    }
-  }
-  */
-
-  /**
-   * Starts a list of tasks, passed as a JSON string representing a list of [Task] objects.
-   *
-   * Returns a list of booleans indicating the success of each individual enqueue operation.
-   */
-  private methodEnqueueAll(call: MethodCall, result: MethodResult) {
-    if (this.scope == undefined) {
-      result.success(new Array<boolean>())
-      return;
-    }
-
-    this.scope.execute()
-    //         let plugin = this;
-    //         scope!!.launch(Dispatchers.IO) {
-    //             val args = call.arguments as List<*>
-    //             val taskListJsonString = args[0] as String
-    //             val notificationConfigListJsonString = args[1] as String
-    //             try {
-    //                 val tasks = Json.decodeFromString<List<Task>>(taskListJsonString)
-    //                 val notificationConfigs =
-    //                     Json.decodeFromString<List<NotificationConfig?>>(
-    //                         notificationConfigListJsonString
-    //                     )
-    //                 val results = mutableListOf<Boolean>()
-    //                 for ((index, task) in tasks.withIndex()) {
-    //                     val notificationConfig = notificationConfigs.getOrNull(index)
-    //                     val notificationConfigJsonString =
-    //                         notificationConfig?.let { Json.encodeToString(it) }
-    //   var success = false
-    //   try {
-    //   try {
-    //   URL(task.url)
-    //   URLDecoder.decode(task.url, "UTF-8")
-    // } catch (_: MalformedURLException) {
-    //   Log.i(TAG, "MalformedURLException for taskId ${task.taskId}")
-    //   results.add(false)
-    //   continue
-    // } catch (_: IllegalArgumentException) {
-    //   Log.i(TAG, "Could not url-decode url for taskId ${task.taskId}")
-    //   results.add(false)
-    //   continue
-    // }
-    // // Enqueue or add to HoldingQueue
-    // success = if (holdingQueue == null) {
-    //   doEnqueue(
-    //     applicationContext,
-    //     task,
-    //     notificationConfigJsonString,
-    //     resumeData = null,
-    //     plugin = plugin
-    //   )
-    // } else {
-    //   Log.i(TAG, "Enqueueing task with id ${task.taskId} to the HoldingQueue")
-    //   holdingQueue?.add(
-    //     EnqueueItem(
-    //       context = applicationContext,
-    //       task = task,
-    //       notificationConfigJsonString = notificationConfigJsonString,
-    //       resumeData = null,
-    //       plugin = plugin
-    //     )
-    //   )
-    //   processStatusUpdate(
-    //     task,
-    //     TaskStatus.enqueued,
-    //     PreferenceManager.getDefaultSharedPreferences(applicationContext),
-    //     context = applicationContext
-    //   )
-    //   true
-    // }
-    // } catch (e: Exception) {
-    //   Log.e(TAG, "Error processing task ${task.taskId}: ${e.message}")
-    // }
-    // results.add(success)
-    // }
-    // result.success(results)
-    // } catch (e: Exception) {
-    //   Log.e(TAG, "Error decoding JSON: ${e.message}")
-    //   result.success(emptyList<Boolean>()) // Return an empty list on error
-    // }
-    // }
-  }
-}
-
-class TaskScope {
-  private tasks: Set<taskpool.Task>; // 保存 taskpool.Task 实例
-
-  constructor() {
-    this.tasks = new Set();
-  }
-
-  // 提交一个 taskpool 任务并返回一个 Promise
-  // fn 必须是一个 @Concurrent 标注的函数引用（或已注册到 TaskPool 的 worker 函数）
-  async launch(fn: Function, ...args: ESObject[]): Promise<ESObject> {
-    // 构造 task（TaskPool API 可能略有差异，请按平台替换）
-    const t = new taskpool.Task(fn, ...args);
-    this.tasks.add(t);
-
-    try {
-      const res = await taskpool.execute(t);
-      //const res = await t.execute();
-      // 任务完成后从集合中移除引用
-      this.tasks.delete(t);
-      return res;
-    } catch (err) {
-      taskpool.cancel(t)
-      this.tasks.delete(t);
-    }
-  }
-
-  // 取消一个正在执行的任务（如果 TaskPool 支持 cancel）
-  cancelTask(task: any): void {
-    try {
-      taskpool.cancel(task);
-    } catch (e) {
-      // ignore
-    } finally {
-      this.tasks.delete(task);
-    }
-  }
-
-  // 取消 scope 内的所有任务（类似 CoroutineScope.cancel()）
-  cancelAll(): void {
-    const snapshot = Array.from(this.tasks);
-    for (let i = 0; i < snapshot.length; i++) {
-      const t = snapshot[i];
-      try {
-        taskpool.cancel(t);
-      } catch (e) {
-        // 可能任务已完成或 API 不支持跨线程取消，忽略错误
       }
     }
-    this.tasks.clear();
   }
 
-  // 是否还有未完成的任务
-  isActive(): boolean {
-    return this.tasks.size > 0;
-  }
-}
+        class TaskScope {
+          private tasks: Set<taskpool.Task>; // 保存 taskpool.Task 实例
+
+          constructor() {
+            this.tasks = new Set();
+          }
+
+          // 提交一个 taskpool 任务并返回一个 Promise
+          // fn 必须是一个 @Concurrent 标注的函数引用（或已注册到 TaskPool 的 worker 函数）
+          async launch(fn: Function, ...args: ESObject[]): Promise<ESObject> {
+            // 构造 task（TaskPool API 可能略有差异，请按平台替换）
+            const t = new taskpool.Task(fn, ...args);
+            this.tasks.add(t);
+
+            try {
+              const res = await taskpool.execute(t);
+              //const res = await t.execute();
+              // 任务完成后从集合中移除引用
+              this.tasks.delete(t);
+              return res;
+            } catch (err) {
+              taskpool.cancel(t)
+              this.tasks.delete(t);
+            }
+          }
+
+          // 取消一个正在执行的任务（如果 TaskPool 支持 cancel）
+          cancelTask(task: any): void {
+            try {
+              taskpool.cancel(task);
+            } catch (e) {
+              // ignore
+            } finally {
+              this.tasks.delete(task);
+            }
+          }
+
+          // 取消 scope 内的所有任务（类似 CoroutineScope.cancel()）
+          cancelAll(): void {
+            const snapshot = Array.from(this.tasks);
+            for (let i = 0; i < snapshot.length; i++) {
+              const t = snapshot[i];
+              try {
+                taskpool.cancel(t);
+              } catch (e) {
+                // 可能任务已完成或 API 不支持跨线程取消，忽略错误
+              }
+            }
+            this.tasks.clear();
+          }
+
+          // 是否还有未完成的任务
+          isActive(): boolean {
+            return this.tasks.size > 0;
+          }
+        }

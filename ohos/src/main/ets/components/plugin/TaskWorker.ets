@@ -13,7 +13,7 @@ import {TaskStatusUpdate,TaskStatusUpdatePara} from './Models'
 import { workScheduler } from '@kit.BackgroundTasksKit'
 import { Callbacks } from './Callbacks'
 
-async function getTaskMap(prefs: dataPreferences.Preferences): Promise<Map<string, Task>> {
+export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task> {
   await BDPlugin.prefsLock.lockAsync<Map<string,Task>>(() => {
   let tasksMapJson:string = prefs.getSync(BDPlugin.keyTasksMap, "{}") as string?? "{}" as string
   return JSON.parse(tasksMapJson) as Map<string,Task>
@@ -24,17 +24,29 @@ async function getTaskMap(prefs: dataPreferences.Preferences): Promise<Map<strin
 return new Map<string,Task>();
 }
 
+export enum TaskWorkerKey{
+  keyNotificationConfig = "notificationConfig",
+  keyResumeDataData = "tempFilename",
+  keyStartByte = "startByte",
+  keyETag = "eTag",
+  keyTask = "Task"
+}
+
+
+
 export class TaskWorker {
   static readonly TAG = "TaskWorker"
   readonly chunkGroup = "chunk"
-  readonly keyTask = "Task"
+
+
+  public static readonly keyTask = "Task"
   readonly keyNotificationConfig = "notificationConfig"
   readonly keyResumeDataData = "tempFilename"
   readonly keyStartByte = "startByte"
   readonly keyETag = "eTag"
   readonly bufferSize = 2 << 12;
   readonly taskTimeoutMillis: number = 9 * 60 * 1000 // 9 minutes
-  static keyTask: string
+
   static keyNotificationConfig: string
   static keyResumeDataData: string
   static keyStartByte: string
@@ -99,7 +111,7 @@ export class TaskWorker {
    *
    * Sends progress update via the background channel to Flutter, if requested
    */
-  public static processProgressUpdate(
+  public static async processProgressUpdate(
     task: Task, progress: number, prefs: dataPreferences.Preferences, expectedFileSize: number = -1,
     downloadSpeed: number = -1.0, timeRemaining: number = -1000
   ) {
