@@ -1,5 +1,4 @@
 import { collections, MessageEvents, taskpool, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS'
-import { SendableObject } from './BackgroundServicePlugin'
 import { ExceptionType, Task, TaskException, TaskProgressUpdate, TaskStatus, TaskStatus_fun } from './Models'
 import dataPreferences from '@ohos.data.preferences'
 import { common } from '@kit.AbilityKit'
@@ -13,16 +12,7 @@ import {TaskStatusUpdate,TaskStatusUpdatePara} from './Models'
 import { workScheduler } from '@kit.BackgroundTasksKit'
 import { Callbacks } from './Callbacks'
 
-export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task> {
-  await BDPlugin.prefsLock.lockAsync<Map<string,Task>>(() => {
-  let tasksMapJson:string = prefs.getSync(BDPlugin.keyTasksMap, "{}") as string?? "{}" as string
-  return JSON.parse(tasksMapJson) as Map<string,Task>
 
-
-  // 执行某些操作
-});
-return new Map<string,Task>();
-}
 
 export enum TaskWorkerKey{
   keyNotificationConfig = "notificationConfig",
@@ -32,30 +22,67 @@ export enum TaskWorkerKey{
   keyTask = "Task"
 }
 
-
-
 export class TaskWorker {
   static readonly TAG = "TaskWorker"
-  readonly chunkGroup = "chunk"
+  static readonly chunkGroup = "chunk"
+  static readonly keyTask = "Task"
+  static readonly keyNotificationConfig = "notificationConfig"
+  static readonly keyResumeDataData = "tempFilename"
+  static readonly keyStartByte = "startByte"
+  static readonly keyETag = "eTag"
+  static readonly bufferSize = 2 << 12;
+
+  static readonly taskTimeoutMillis = 9 * 60 * 1000;  // 9 minutes
 
 
-  public static readonly keyTask = "Task"
-  readonly keyNotificationConfig = "notificationConfig"
-  readonly keyResumeDataData = "tempFilename"
-  readonly keyStartByte = "startByte"
-  readonly keyETag = "eTag"
-  readonly bufferSize = 2 << 12;
-  readonly taskTimeoutMillis: number = 9 * 60 * 1000 // 9 minutes
-
-  static keyNotificationConfig: string
-  static keyResumeDataData: string
-  static keyStartByte: string
-  static keyETag: string
   public task?: Task
-  public applicationContext?: common.UIAbilityContext
+
+  // properties related to pause/resume functionality and progress
+  public startByte = 0 // actual starting position within the task range, used for resume
+  public bytesTotal = 0 // total bytes read in this download session
+  public taskCanResume = false // whether task is able to resume
+  public sResume = false // whether task is a resume
+  private bytesTotalAtLastProgressUpdate = 0
+  private lastProgressUpdateTime = 0 // in millis
+  private lastProgressUpdate = 0.0
+  private nextProgressUpdateTime = 0
+  public  networkSpeed = -1.0 // in MB/s
+  private isTimedOut = false
+
+  // properties related to notifications
   public notificationConfigJsonString?: string
   public notificationConfig?: NotificationConfig
-  public notificationId: number = 0
+  public notificationId = 0
+  public notificationProgress = 2.0 // indeterminate
+
+  // additional parameters for final TaskStatusUpdate
+  public  taskException?: TaskException
+  public responseBody?: string
+  private responseHeaders?: Map<string, string>
+  public  responseStatusCode?: number
+  private mimeType?: string // derived from Content-Type header
+  private charSet?: string // derived from Content-Type header
+
+  // related to foreground tasks
+  private runInForegroundFileSize: number = -1
+  public canRunInForeground = false
+  public runInForeground = false
+  private hasDeliveredResult = false
+
+  get isActive(): boolean {
+    return !this.hasDeliveredResult && !this.isStopped;
+  }
+
+  public prefs?: dataPreferences.Preferences
+
+
+  // static keyNotificationConfig: string
+  // static keyResumeDataData: string
+  // static keyStartByte: string
+  // static keyETag: string
+
+  public applicationContext?: common.UIAbilityContext
+
   static taskException?: TaskException
   static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
 
@@ -67,38 +94,7 @@ export class TaskWorker {
     //this.workerParams = workerParams
   }
 
-  /**
-   * Processes a progress update for the [task]
-   *
-   * Sends progress update via the background channel to Flutter, if requested
-   */
-  // public processProgressUpdate(
-  //   task: Task, progress: number, prefs: dataPreferences.Preferences, expectedFileSize: number = -1,
-  //   downloadSpeed: number = -1.0, timeRemaining: number = -1000
-  // ) {
-  //   if (task.providesProgressUpdates()) {
-  //     postOnBackgroundChannel(new BackgroundPost(
-  //       "progressUpdate", task,
-  //       Map<string,string>(progress, expectedFileSize, downloadSpeed, timeRemaining),
-  //       onFail =
-  //         {
-  //           // unsuccessful post, so store in local prefs
-  //           Log.d(TAG, "Could not post progress update -> storing locally")
-  //           storeLocally(
-  //           BDPlugin.keyProgressUpdateMap,
-  //           task.taskId,
-  //           Json.encodeToString(
-  //           TaskProgressUpdate(
-  //             task,
-  //             progress,
-  //             expectedFileSize
-  //           )
-  //           ),
-  //           prefs
-  //           )
-  //         })
-  //   }
-  // }
+
   static postOnBackgroundChannel(
     method: string, task: Task, arg: ESObject, onFail?: () => Promise<void>
   ) {
@@ -174,17 +170,18 @@ export class TaskWorker {
   /** Return the map of tasks stored in preferences */
 
 
-  static async processStatusUpdate(
+  public static async processStatusUpdate(
     task: Task,
     status: TaskStatus,
     prefs: dataPreferences.Preferences,
+    context?: common.UIAbilityContext,
     taskException?: TaskException,
     responseBody?: string,
     responseHeaders?: Map<string, string>,
     responseStatusCode?: number,
     mimeType?: string,
     charSet?: string,
-    context?: common.UIAbilityContext) {
+    ) {
 
     if (BDPlugin.tasksToReEnqueue.delete(task)) {
       if (status == TaskStatus.paused || status == TaskStatus.canceled || status == TaskStatus.failed) {
@@ -318,7 +315,16 @@ export class TaskWorker {
   }
 }
 
+export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task> {
+  BDPlugin.prefsLock.lockAsync<Map<string,Task>>(() => {
+    let tasksMapJson:string = prefs.getSync(BDPlugin.keyTasksMap, "{}") as string?? "{}" as string
+    return JSON.parse(tasksMapJson) as Map<string,Task>
+  });
+  return new Map<string,Task>();
+}
+
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+
 
 workerPort.onmessage = (e: MessageEvents) => {
   let obj: collections.Map<string, string> = e.data;
