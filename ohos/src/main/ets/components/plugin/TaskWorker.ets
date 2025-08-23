@@ -31,71 +31,9 @@ export class TaskWorker {
   static readonly keyStartByte = "startByte"
   static readonly keyETag = "eTag"
   static readonly bufferSize = 2 << 12;
+  static readonly taskTimeoutMillis = 9 * 60 * 1000; // 9 minutes
 
-  static readonly taskTimeoutMillis = 9 * 60 * 1000;  // 9 minutes
-
-
-  public task?: Task
-
-  // properties related to pause/resume functionality and progress
-  public startByte = 0 // actual starting position within the task range, used for resume
-  public bytesTotal = 0 // total bytes read in this download session
-  public taskCanResume = false // whether task is able to resume
-  public sResume = false // whether task is a resume
-  private bytesTotalAtLastProgressUpdate = 0
-  private lastProgressUpdateTime = 0 // in millis
-  private lastProgressUpdate = 0.0
-  private nextProgressUpdateTime = 0
-  public  networkSpeed = -1.0 // in MB/s
-  private isTimedOut = false
-
-  // properties related to notifications
-  public notificationConfigJsonString?: string
-  public notificationConfig?: NotificationConfig
-  public notificationId = 0
-  public notificationProgress = 2.0 // indeterminate
-
-  // additional parameters for final TaskStatusUpdate
-  public  taskException?: TaskException
-  public responseBody?: string
-  private responseHeaders?: Map<string, string>
-  public  responseStatusCode?: number
-  private mimeType?: string // derived from Content-Type header
-  private charSet?: string // derived from Content-Type header
-
-  // related to foreground tasks
-  private runInForegroundFileSize: number = -1
-  public canRunInForeground = false
-  public runInForeground = false
-  private hasDeliveredResult = false
-
-  get isActive(): boolean {
-    return !this.hasDeliveredResult && !this.isStopped;
-  }
-
-  public prefs?: dataPreferences.Preferences
-
-
-  // static keyNotificationConfig: string
-  // static keyResumeDataData: string
-  // static keyStartByte: string
-  // static keyETag: string
-
-  public applicationContext?: common.UIAbilityContext
-
-  static taskException?: TaskException
-  static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
-
-  //public workerParams?:Map<string,ESObject>
-
-  constructor(applicationContext?: common.UIAbilityContext) {
-    //constructor(applicationContext?:common.UIAbilityContext,workerParams?:Map<string,ESObject>) {
-    this.applicationContext = applicationContext
-    //this.workerParams = workerParams
-  }
-
-
-  static postOnBackgroundChannel(
+  public static async postOnBackgroundChannel(
     method: string, task: Task, arg: ESObject, onFail?: () => Promise<void>
   ) {
     let bgPost = new BackgroundPost(task, method, arg, onFail)
@@ -128,47 +66,25 @@ export class TaskWorker {
             )),
             prefs
           )
-        })
+        }
+      )
     }
   }
 
-  static storeLocally(
+  private static storeLocally(
     prefsKey: string,
     taskId: string,
     item: string,
     prefs: dataPreferences.Preferences
   ) {
     BDPlugin.prefsLock.lockAsync(() => {
-      let jsonString = prefs.getSync(prefsKey, "") as string
+      let jsonString = prefs.getSync(prefsKey, "{}") as string
       let mapByTaskId = JSON.parse(jsonString) as Map<string, string>
-      mapByTaskId[taskId] = item
+      mapByTaskId.set(taskId, item);
       prefs.putSync(prefsKey, JSON.stringify(mapByTaskId));
-
+      prefs.flushSync();
     })
-
   }
-
-  /** Return true if we can send a cancellation for this task
-   *
-   * Cancellation can only be sent if it wasn't already sent by the [BDPlugin]
-   *  in the cancelTasksWithId method.  Side effect is to clean out older cancellation entries
-   * from the [BDPlugin.cancelUpdateSentForTaskId]
-   */
-  static canSendCancellation(task: Task): boolean {
-    let now = systemDateTime.getTime(false)
-    let filtered: Map<string, number> = new Map();
-    BDPlugin.cancelUpdateSentForTaskId.forEach((value, key) => {
-      if (now - value < 3000) {
-        filtered.set(key, value);
-      }
-    });
-    BDPlugin.cancelUpdateSentForTaskId = filtered;
-
-    return !BDPlugin.cancelUpdateSentForTaskId.has(task.taskId)
-  }
-
-  /** Return the map of tasks stored in preferences */
-
 
   public static async processStatusUpdate(
     task: Task,
@@ -181,7 +97,7 @@ export class TaskWorker {
     responseStatusCode?: number,
     mimeType?: string,
     charSet?: string,
-    ) {
+  ) {
 
     if (BDPlugin.tasksToReEnqueue.delete(task)) {
       if (status == TaskStatus.paused || status == TaskStatus.canceled || status == TaskStatus.failed) {
@@ -221,7 +137,7 @@ export class TaskWorker {
         case TaskStatus.canceled:
           canSendStatusUpdate = TaskWorker.canSendCancellation(task)
           if (canSendStatusUpdate) {
-            BDPlugin.cancelUpdateSentForTaskId[task.taskId] = systemDateTime.getTime(false)
+            BDPlugin.cancelUpdateSentForTaskId.set(task.taskId, systemDateTime.getTime(false));
             TaskWorker.processProgressUpdate(task, -2.0, prefs)
           }
           break;
@@ -286,7 +202,7 @@ export class TaskWorker {
           let workManager = await workScheduler.obtainAllWorks();
 
           for (let i = 0; i < workManager.length; i++) {
-            if (workManager[i].workId == parseInt(task.taskId)) {
+            if (workManager[i].parameters['taskId'] == task.taskId) {
               try {
                 workScheduler.stopWork(workManager[i], false);
               } catch (e) {
@@ -301,8 +217,8 @@ export class TaskWorker {
         BDPlugin.prefsLock.lockAsync<void>(async () => {
           let tasksMap = await getTaskMap(prefs)
           tasksMap.delete(task.taskId)
-          prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(tasksMap))
-
+          prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(tasksMap));
+          prefs.flushSync();
           // 执行某些操作
         });
 
@@ -313,7 +229,91 @@ export class TaskWorker {
       }
     }
   }
+
+  /** Return true if we can send a cancellation for this task
+   *
+   * Cancellation can only be sent if it wasn't already sent by the [BDPlugin]
+   *  in the cancelTasksWithId method.  Side effect is to clean out older cancellation entries
+   * from the [BDPlugin.cancelUpdateSentForTaskId]
+   */
+  private static canSendCancellation(task: Task): boolean {
+    let now = systemDateTime.getTime(false);
+    BDPlugin.cancelUpdateSentForTaskId = new Map(
+      Array.from(BDPlugin.cancelUpdateSentForTaskId.entries())
+        .filter(([_, ts]) => now - ts < 3000)
+    );
+    return BDPlugin.cancelUpdateSentForTaskId.get(task.taskId) == undefined;
+  }
+
+
+  public task?: Task
+  // properties related to pause/resume functionality and progress
+  public startByte = 0 // actual starting position within the task range, used for resume
+  public bytesTotal = 0 // total bytes read in this download session
+  public taskCanResume = false // whether task is able to resume
+  public sResume = false // whether task is a resume
+  private bytesTotalAtLastProgressUpdate = 0
+  private lastProgressUpdateTime = 0 // in millis
+  private lastProgressUpdate = 0.0
+  private nextProgressUpdateTime = 0
+  public networkSpeed = -1.0 // in MB/s
+  private isTimedOut = false
+  // properties related to notifications
+  public notificationConfigJsonString?: string
+  public notificationConfig?: NotificationConfig
+  public notificationId = 0
+  public notificationProgress = 2.0 // indeterminate
+
+  // additional parameters for final TaskStatusUpdate
+  public taskException?: TaskException
+  public responseBody?: string
+  private responseHeaders?: Map<string, string>
+  public responseStatusCode?: number
+  private mimeType?: string // derived from Content-Type header
+  private charSet?: string // derived from Content-Type header
+
+  // related to foreground tasks
+  private runInForegroundFileSize: number = -1
+  public canRunInForeground = false
+  public runInForeground = false
+  private hasDeliveredResult = false
+
+  get isActive(): boolean {
+    return !this.hasDeliveredResult && !this.isStopped;
+  }
+
+  public prefs?: dataPreferences.Preferences
+  // static keyNotificationConfig: string
+  // static keyResumeDataData: string
+  // static keyStartByte: string
+  // static keyETag: string
+
+  public applicationContext?: common.UIAbilityContext
+  static taskException?: TaskException
+  static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
+
+  //public workerParams?:Map<string,ESObject>
+
+  constructor(applicationContext?: common.UIAbilityContext) {
+    //constructor(applicationContext?:common.UIAbilityContext,workerParams?:Map<string,ESObject>) {
+    this.applicationContext = applicationContext
+    //this.workerParams = workerParams
+  }
 }
+
+
+
+
+
+
+
+
+
+
+  /** Return the map of tasks stored in preferences */
+
+
+
 
 export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task> {
   BDPlugin.prefsLock.lockAsync<Map<string,Task>>(() => {
@@ -324,6 +324,7 @@ export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task>
 }
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+
 
 
 workerPort.onmessage = (e: MessageEvents) => {
