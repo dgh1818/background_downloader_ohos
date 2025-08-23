@@ -1,7 +1,9 @@
-import { MethodChannel } from '@ohos/flutter_ohos'
+import { Any, FlutterCallbackInformation, FlutterEngine, MethodChannel,MethodResult } from '@ohos/flutter_ohos'
 import { ArkTSUtils } from '@kit.ArkTS'
 import { common } from '@kit.AbilityKit'
 import { Task, TaskStatusUpdate } from './Models'
+import { preferences } from '@kit.ArkData';
+import BDPlugin from './BDPlugin';
 
 export interface Deferred<T> {
   promise: Promise<T>;
@@ -10,7 +12,7 @@ export interface Deferred<T> {
 }
 
 export function createDeferred<T>(): Deferred<T> {
-  let resolve!: (value: T | PromiseLike<T>) => void;
+  let resolve!: (value: T | PromiseLike<T> ) => void;
   let reject!: (reason?: string) => void;
   const promise = new Promise<T>((res, rej) => {
     resolve = res;
@@ -19,11 +21,42 @@ export function createDeferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-export class Callbacks {
+function FlutterResultHandlerArkTS(completer: Deferred<string | undefined>): MethodResult {
+  return {
+    // Flutter 调用成功时
+    success: (result?: Object) => {
+      try {
+        // 如果返回的是 JSON 字符串，可以直接 resolve
+        completer.resolve(result != undefined ? result as string : undefined);
+      } catch (e) {
+        // 防止重复 resolve 报错
+        console.error("resolve error:", e);
+      }
+    },
+    // Flutter 调用报错时
+    error: (errorCode: string, errorMessage?: string, details?: Object) => {
+      try {
+        // 根据你的需求，严格模式可以 reject，宽松模式可以 resolve(null)
+        completer.reject(`${errorCode}: ${errorMessage ?? ''}`);
+      } catch (e) {
+        console.error("reject error:", e);
+      }
+    },
+    // Flutter 端未实现
+    notImplemented: () => {
+      try {
+        completer.reject("Method not implemented on Dart side");
+      } catch (e) {
+        console.error("reject error:", e);
+      }
+    }
+  };
+}
 
+export class Callbacks {
   static readonly TAG = "Callbacks"
-  static callbackMethodChannel?: MethodChannel
-  static methodChannelMutex:ArkTSUtils.locks.AsyncLock
+  private static callbackMethodChannel?: MethodChannel
+  private static methodChannelMutex: ArkTSUtils.locks.AsyncLock
 
   /**
    * Retrieves the [MethodChannel] used for communication with the Flutter background isolate.
@@ -40,15 +73,108 @@ export class Callbacks {
    * @param context The [Context] required for accessing resources and the UI thread.
    * @return The [MethodChannel] instance, or `null` if initialization fails.
    */
-  private static async getMethodChannel(context: common.UIAbilityContext): Promise<MethodChannel> {
-    Callbacks.methodChannelMutex.lockAsync<void>(async () => {
+  private static async getMethodChannel(context: common.UIAbilityContext): Promise<MethodChannel | undefined> {
+    const result = await Callbacks.methodChannelMutex.lockAsync<MethodChannel | undefined>(async () => {
       if (Callbacks.callbackMethodChannel == undefined) {
-        let methodChannelCompleter = createDeferred<MethodChannel>();
-        Looper.getMainLooper()
+        let methodChannelCompleter = createDeferred<MethodChannel | undefined>();
+        mainHandler.postTask(() => {
+
+          try {
+            let options: preferences.Options = { name: 'DEFAULT' };
+            let prefs = preferences.getPreferencesSync(context, options);
+            let rawHandle =
+              prefs.getSync(BDPlugin.keyCallbackDispatcherRawHandle, -1) as number;
+            if (rawHandle == -1) {
+              console.warn(
+                Callbacks.TAG,
+                "getMethodChannel without registered callbackDispatcherRawHandle"
+              )
+              return;
+            }
+
+            let flutterEngine = new FlutterEngine(context, null, null, null)
+            let callbackDispatcherCallback = FlutterCallbackInformation.lookupCallbackInformation(rawHandle);
+
+            if (callbackDispatcherCallback == null) {
+              console.warn(
+                Callbacks.TAG,
+                "invokeOnStartCallback failed to find callbackDispatcher"
+              )
+              return;
+            }
+            Callbacks.callbackMethodChannel = new MethodChannel(
+              flutterEngine.dartExecutor.getBinaryMessenger(),
+              "com.bbflight.background_downloader.callbacks"
+            )
+            methodChannelCompleter.resolve(Callbacks.callbackMethodChannel);
+          } catch (e) {
+            console.error(Callbacks.TAG, "Error creating MethodChannel", e)
+            methodChannelCompleter.resolve(undefined);
+          }
+
+          return methodChannelCompleter.promise;
+
+          // 这里的代码在主线程执行 —— 等价于 Android 的 Handler(Looper.getMainLooper()).post { ... }
+        });
       }
+
+      return Callbacks.callbackMethodChannel;
 
       // 执行某些操作
     });
+
+    return result;
+  }
+
+  private static async invokeCallback(context: common.UIAbilityContext,
+    methodName: string,
+    task?: Task,
+    statusUpdate?: TaskStatusUpdate,
+  ): Promise<Any> {
+    let methodChannel = await Callbacks.getMethodChannel(context);
+    if(methodChannel==undefined) {
+      return;
+    }
+    return Callbacks.methodChannelMutex.lockAsync<ESObject>(async () => {
+      let resultingObjectAsJsonStringCompleter = createDeferred<string | undefined>();
+      mainHandler.postTask(() => {
+        let arg = task!=undefined ? JSON.stringify(task) : JSON.stringify(statusUpdate);
+        console.info(Callbacks.TAG, "Invoking"+ methodName+" for taskId " + task?.taskId);
+        methodChannel!.invokeMethod(
+          methodName,
+          arg, // either task or update
+          FlutterResultHandlerArkTS(resultingObjectAsJsonStringCompleter)
+        )
+
+      });
+
+      let objectAsJsonString = await resultingObjectAsJsonStringCompleter.promise;
+      return (objectAsJsonString == undefined) ? undefined :(methodName == "beforeTaskStartCallback"?JSON.parse(objectAsJsonString) as TaskStatusUpdate:JSON.parse(objectAsJsonString) as Task)
+
+    });
+
+  }
+
+  /**
+   * Invoke the onTaskFinishedCallback
+   */
+  public static async invokeOnTaskFinishedCallback(context: common.UIAbilityContext, statusUpdate: TaskStatusUpdate) {
+    try {
+      Callbacks.invokeCallback(
+        context,
+        "onTaskFinishedCallback",
+        undefined,
+        statusUpdate
+      ) //as Task?
+    } catch (e) {
+      console.error(Callbacks.TAG, "Error in invokeOnTaskFinishedCallback", e)
+    }
+  }
+}
+
+
+
+
 
 /*
 

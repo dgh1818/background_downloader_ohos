@@ -1,9 +1,9 @@
 import { common } from "@kit.AbilityKit";
 import BDPlugin from "./BDPlugin";
-import { ResumeData, Task, TaskStatus } from "./Models";
+import { ExceptionType, ResumeData, Task, TaskException, TaskStatus } from "./Models";
 import { TaskWorker } from "./TaskWorker";
 import { preferences } from "@kit.ArkData";
-import { Queue } from "@kit.ArkTS";
+import { ArkTSUtils, Queue } from "@kit.ArkTS";
 import { NotificationService } from "./Notifications";
 
 /**
@@ -32,10 +32,62 @@ export class HoldingQueue {
   private concurrentByGroup = new Map<string, number>();
 
   static taskFinishedQueue = new Queue<Task>();
+  private queue = new Queue<EnqueueItem>() //PriorityBlockingQueue
+  //private val taskFinishedQueue = Channel<Task>(capacity = Channel.UNLIMITED)
+
+  // private job?: Job
+  // private scope = CoroutineScope(Dispatchers.Default)
+  // private processSignal = Channel<Unit>(Channel.UNLIMITED)
+  public stateMutex = new ArkTSUtils.locks.AsyncLock();
 
   public static taskFinished(task: Task) {
     HoldingQueue.taskFinishedQueue.add(task);
 
+  }
+
+  /**
+   * Add [EnqueueItem] [item] to the queue and advance the queue if possible
+   */
+  public async add(item: EnqueueItem) {
+    this.stateMutex.lockAsync<void>(async () => {
+      this.queue.add(item)
+      this.enqueuedTaskIds.push(item.task.taskId);
+      NotificationService.registerEnqueue(
+        item,
+        true
+      ) // for group notification count
+
+
+    });
+    this.advanceQueue();
+  }
+
+  /**
+   * Advance the queue by signalling the queue processing coroutine
+   *
+   * Also restarts a timer that will advance the queue in 10 seconds, in case
+   * it dries up
+   */
+  private advanceQueue() {
+    this.processSignal.trySend(Unit)
+    if (this.queue.length!=0) {
+      advanceQueueInFuture()
+    }
+  }
+
+  /**
+   * Calls [advanceQueue] in 10 seconds, thus ensuring it never dries up
+   *
+   * If called again before the timer fires, cancels the original timer and
+   * resets to 10 seconds
+   */
+  private advanceQueueInFuture() {
+    this.job?.cancel();
+    job = scope.launch {
+      delay(10000)
+      calculateState()
+      advanceQueue()
+    }
   }
 
   //private queue = PriorityBlockingQueue<EnqueueItem>()
@@ -46,6 +98,10 @@ export class HoldingQueue {
   // private val scope = CoroutineScope(Dispatchers.Default)
   // private val processSignal = Channel<Unit>(Channel.UNLIMITED)
   // val stateMutex = Mutex()
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -83,12 +139,12 @@ export class EnqueueItem {
    * Execute the re-enqueue after an appropriate delay
    * @param afterDelayMillis minimal延迟（ms）
    */
-  async enqueue(afterDelayMillis: number = 1000): Promise<void> {
-    try {
+  public async enqueue(afterDelayMillis: number = 1000): Promise<void> {
+
       const timeSinceCreatedMillis = Date.now() - this.created.getTime();
-      // if (timeSinceCreatedMillis < afterDelayMillis) {
-      //   await sleep(afterDelayMillis - timeSinceCreatedMillis);
-      // }
+      if (timeSinceCreatedMillis < afterDelayMillis) {
+        await sleep(afterDelayMillis - timeSinceCreatedMillis);
+      }
 
       // 假定 BDPlugin.doEnqueue 在 arkts 中也是个 async 函数并返回 boolean
       const success = await BDPlugin.doEnqueue(
@@ -101,7 +157,7 @@ export class EnqueueItem {
       );
 
       if (!success) {
-        console.warn(
+        console.warn(BDPlugin.TAG,
           `Delayed or retried enqueue failed for taskId ${this.task.taskId}`
         );
 
@@ -116,12 +172,8 @@ export class EnqueueItem {
           this.task,
           TaskStatus.failed, // 假定 TaskStatus 在 arkts 中有对应值
           defaultPref, // 占位
-          // taskException: {
-          //   type: ExceptionType.general,
-          //   description: "Delayed or retried enqueue failed",
-          //   httpResponseCode: -1,
-          // },
           this.context,
+          new TaskException(ExceptionType.general,undefined,"Delayed or retried enqueue failed")
         ); //需要改成后台
 
         // 如果有持有队列，通知其任务完成（占位调用）
@@ -130,20 +182,10 @@ export class EnqueueItem {
 
         }
 
-        NotificationService.registerEnqueue
+        NotificationService.registerEnqueue(this, false);
 
-        // 通知注册重试失败（占位）
-        if (typeof NotificationService?.registerEnqueue === "function") {
-          NotificationService.registerEnqueue(this, false);
-        }
       }
-
-      // 等一点点，模拟 Kotlin 里的 delay(20)
-      //await sleep(20);
-    } catch (err) {
-      // 这里捕获并记录异常，避免未捕获的 promise 错误
-      console.error("enqueue error:", err);
-    }
+    await sleep(20);
   }
 
   /**
