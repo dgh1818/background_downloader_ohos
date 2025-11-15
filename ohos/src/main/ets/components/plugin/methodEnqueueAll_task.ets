@@ -4,7 +4,6 @@ import {
   MethodCall,
   MethodCallHandler,
   MethodChannel,
-  MethodResult,
 
 } from "@ohos/flutter_ohos";
 import {
@@ -22,7 +21,7 @@ import {
 } from "@kit.AbilityKit";
 import { hash } from '@kit.CoreFileKit';
 import { BusinessError } from '@ohos.base';
-import { ArkTSUtils, ArrayList, collections, List, MessageEvents, taskpool, uri, url, worker } from "@kit.ArkTS";
+import { ArkTSUtils, ArrayList, collections, MessageEvents, taskpool, uri, url, worker } from "@kit.ArkTS";
 import { fileUri } from '@kit.CoreFileKit';
 import dataPreferences from '@ohos.data.preferences'
 import { photoAccessHelper } from "@kit.MediaLibraryKit";
@@ -37,19 +36,21 @@ import BDPlugin from "./BDPlugin";
 
 
 @Concurrent
-export async function methodEnqueueAll_task(taskListJsonString: string, notificationConfigListJsonString: string,
-  result: MethodResult,plugin:BDPlugin) {
+export async function methodEnqueueAll_task(
+  taskListJsonString: string,
+  notificationConfigListJsonString: string
+): Promise<Array<boolean>> {
 
   try {
-    let tasks = JSON.parse(taskListJsonString) as List<Task>;
-    let notificationConfigs =
-      JSON.parse(notificationConfigListJsonString) as List<NotificationConfig>;
-    let results = new List<Boolean>();
+    const rawTasks = JSON.parse(taskListJsonString) as Array<Record<string, Object>>;
+    const rawNotificationConfigs =
+      JSON.parse(notificationConfigListJsonString) as Array<NotificationConfig | undefined>;
+    const results: boolean[] = [];
 
-    for (let i = 0; i < tasks.length; i++) {
-      let task = tasks.get(i);
-      let notificationConfig = notificationConfigs.get(i)
-      let notificationConfigJsonString = notificationConfig ? JSON.stringify(notificationConfig) : undefined;
+    for (let i = 0; i < rawTasks.length; i++) {
+      const task = TaskWorker.fromSerializableTask(rawTasks[i]);
+      const notificationConfig = rawNotificationConfigs[i];
+      const notificationConfigJsonString = notificationConfig ? JSON.stringify(notificationConfig) : undefined;
       let success = false;
       try {
         try {
@@ -57,27 +58,29 @@ export async function methodEnqueueAll_task(taskListJsonString: string, notifica
         } catch (e) {
 
           console.log(BDPlugin.TAG, 'Malformed or undecodable URL for taskId' + task.taskId);
-          results.add(false);
+          results.push(false);
           continue;
         }
 
         if (BDPlugin.holdingQueue == undefined) {
           // 直接入队
-          success =
-            await BDPlugin.doEnqueue(BDPlugin.uiContext!, task, notificationConfigJsonString, undefined, undefined,
-              plugin)
-        } else {
-          console.log(BDPlugin.TAG, 'Enqueueing task with id ' + task.taskId + ' to the HoldingQueue');
-          BDPlugin.holdingQueue.add(new EnqueueItem(
+          success = await BDPlugin.doEnqueue(
             BDPlugin.uiContext!,
             task,
-            notificationConfigJsonString,
-            undefined,
-            plugin
-          ));
+            notificationConfigJsonString
+          )
+        } else {
+          console.log(BDPlugin.TAG, 'Enqueueing task with id ' + task.taskId + ' to the HoldingQueue');
+          await BDPlugin.holdingQueue.add(
+            new EnqueueItem(
+              BDPlugin.uiContext!,
+              task,
+              notificationConfigJsonString
+            )
+          );
           let options: preferences.Options = { name: 'DEFAULT' };
           let pref_current = preferences.getPreferencesSync(BDPlugin.uiContext, options);
-          TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, pref_current, BDPlugin.uiContext);
+          await TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, pref_current, BDPlugin.uiContext);
           success = true;
 
         }
@@ -85,10 +88,11 @@ export async function methodEnqueueAll_task(taskListJsonString: string, notifica
         console.error(BDPlugin.TAG + 'Error processing task' + task.taskId + ':' + e);
 
       }
-      results.add(success);
+      results.push(success);
     }
-    result.success(results);
+    return results;
   } catch (e) {
     console.error(BDPlugin.TAG, 'Error decoding JSON: ' + e);
+    return [];
   }
 }

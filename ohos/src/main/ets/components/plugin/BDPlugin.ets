@@ -36,7 +36,7 @@ import { dataSharePredicates, preferences } from "@kit.ArkData";
 import { workScheduler } from "@kit.BackgroundTasksKit";
 
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
-import { NotificationConfig } from './Notifications'
+import { NotificationConfig, NotificationService } from './Notifications'
 import { ISendable, ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
 import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 import { methodEnqueueAll_task } from "./methodEnqueueAll_task";
@@ -126,126 +126,120 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     initialDelayMillis: number = 0,
     plugin?: BDPlugin
   ): Promise<boolean> {
-
-    console.log(BDPlugin.TAG + 'Enqueuing task with id' + task.taskId);
-    let bgChannel = BDPlugin.methodbackgroundChannel(plugin)
-    if (bgChannel != undefined) {
+    console.info(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}`);
+    const bgChannel = BDPlugin.methodbackgroundChannel(plugin);
+    if (bgChannel !== undefined) {
       BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
     } else {
-      console.warn(BDPlugin.TAG, "Could not find backgroundChannel for taskId" + task.taskId);
+      console.warn(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
     }
-    BDPlugin.holdingQueue?.hostByTaskId?.set(
-      task.taskId,
-      task.host()
-    ) // store host if we have a HoldingQueue
+    if (BDPlugin.holdingQueue) {
+      BDPlugin.holdingQueue.hostByTaskId.set(task.taskId, task.host() ?? "");
+    }
     BDPlugin.canceledTaskIds.delete(task.taskId);
-    BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId) // reset flag
-    let dataBuilder = new collections.Map<string, string | number>();
+    BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId);
 
-
-    if (notificationConfigJsonString != undefined) {
+    const parameters: Record<string, string | number> = {};
+    parameters[TaskWorkerKey.keyTask] = TaskWorker.taskToJsonString(task);
+    if (notificationConfigJsonString !== undefined) {
+      parameters[TaskWorkerKey.keyNotificationConfig] = notificationConfigJsonString;
       BDPlugin.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
     }
-    let data = ArkTSUtils.ASON.stringify(dataBuilder) //To Do
-
-    let taskRequiresWifi = BDPlugin.taskRequiresWifi(task)
-    if (taskRequiresWifi) {
-      BDPlugin.taskIdsRequiringWiFi.add(task.taskId)
+    if (resumeData !== undefined) {
+      parameters[TaskWorkerKey.keyResumeDataData] = resumeData.data;
+      parameters[TaskWorkerKey.keyStartByte] = resumeData.requiredStartByte;
+      if (resumeData.eTag !== undefined) {
+        parameters[TaskWorkerKey.keyETag] = resumeData.eTag;
+      }
     }
 
-    // val constraints = Constraints.Builder().setRequiredNetworkType(
-    // if (taskRequiresWifi) NetworkType.UNMETERED else NetworkType.CONNECTED
-    // ).build()
-    let network_condition: workScheduler.NetworkType;
+    const taskRequiresWifi = BDPlugin.taskRequiresWifi(task);
     if (taskRequiresWifi) {
-      network_condition = workScheduler.NetworkType.NETWORK_TYPE_WIFI
-    } else {
-      network_condition = workScheduler.NetworkType.NETWORK_TYPE_ANY
+      BDPlugin.taskIdsRequiringWiFi.add(task.taskId);
     }
 
-    let WorkerName: string;
+    const networkCondition = taskRequiresWifi
+      ? workScheduler.NetworkType.NETWORK_TYPE_WIFI
+      : workScheduler.NetworkType.NETWORK_TYPE_ANY;
 
+    let workerName: string;
     switch (task.taskType) {
       case "ParallelDownloadTask":
-        WorkerName = 'ParallelDownloadTaskWorker'
+        workerName = "ParallelDownloadTaskWorker";
         break;
       case "DownloadTask":
-        WorkerName = 'DownloadTaskWorker'
-        break;
       case "UriDownloadTask":
-        WorkerName = 'DownloadTaskWorker'
+        workerName = "DownloadTaskWorker";
         break;
       case "UploadTask":
-        WorkerName = 'UploadTaskWorker'
-        break;
       case "UriUploadTask":
-        WorkerName = 'UploadTaskWorker'
+        workerName = "UploadTaskWorker";
         break;
       case "MultiUploadTask":
-        WorkerName = 'UploadTaskWorkerr'
+        workerName = "UploadTaskWorker";
         break;
       case "DataTask":
-        WorkerName = 'DataTaskWorker'
+        workerName = "DataTaskWorker";
         break;
       default:
-        console.error(BDPlugin.TAG, 'Unknown taskType' + task.taskType);
-        WorkerName = '';
+        console.error(BDPlugin.TAG, `Unknown taskType ${task.taskType}`);
         return false;
     }
 
-    let requestBuilder: workScheduler.WorkInfo = {
+    const request: workScheduler.WorkInfo = {
       workId: parseInt(task.taskId),
-      bundleName: 'background_downloader',
-      abilityName: WorkerName,
-      networkType: network_condition,
-      parameters: {
-        [TaskWorkerKey.keyTask]: ArkTSUtils.ASON.stringify(task),
-        [TaskWorkerKey.keyNotificationConfig]: notificationConfigJsonString ?? '',
-        [TaskWorkerKey.keyResumeDataData]: resumeData ? resumeData.data : '',
-        [TaskWorkerKey.keyStartByte]: resumeData ? resumeData.requiredStartByte : -1,
-        [TaskWorkerKey.keyETag]: resumeData ? resumeData.eTag ?? '' : '',
-      }
-    }
+      bundleName: "background_downloader",
+      abilityName: workerName,
+      networkType: networkCondition,
+      parameters,
+    };
 
-    // if (initialDelayMillis != 0) {
-    //   requestBuilder.setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
-    // }
-    // if (task.priority < 5 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-    //   requestBuilder.setExpedited(policy = OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-    // }
-
-    workScheduler.startWork(requestBuilder);
+    workScheduler.startWork(request);
 
     try {
-      // withContext(Dispatchers.IO) {
-      //   operation.result.get()
-      // }
-
-      let options: preferences.Options = { name: 'DEFAULT' };
-      let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options)
-      // if (initialDelayMillis != 0) {
-      //   delay(min(100L, initialDelayMillis))
-      // }
-
-      if (BDPlugin.holdingQueue?.enqueuedTaskIds?.includes(task.taskId) != true) {
-        TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, prefs, BDPlugin.uiContext,undefined, undefined, undefined, undefined,
-          undefined, undefined)
-
+      const options: preferences.Options = { name: "DEFAULT" };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+      if (BDPlugin.holdingQueue?.enqueuedTaskIds?.includes(task.taskId) !== true) {
+        await TaskWorker.processStatusUpdate(
+          task,
+          TaskStatus.enqueued,
+          prefs,
+          BDPlugin.uiContext,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined
+        );
       }
-    } catch (e) {
-      console.error(BDPlugin.TAG, 'Unable to start background request for taskId' + task.taskId + 'in operation:');
-      return false
+    } catch (error) {
+      console.error(BDPlugin.TAG, `Unable to start background request for taskId ${task.taskId}`, error);
+      return false;
     }
 
+    NotificationService.registerEnqueue(
+      new EnqueueItem(context, task, notificationConfigJsonString, resumeData, plugin),
+      true
+    );
+
     BDPlugin.prefsLock.lockAsync(() => {
-      let options: preferences.Options = { name: 'DEFAULT' };
-      let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options)
-
-      let tasksMap = getTaskMap(prefs)
+      const options: preferences.Options = { name: "DEFAULT" };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+      const tasksMap = getTaskMap(prefs);
       tasksMap.set(task.taskId, task);
-      prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(tasksMap));
+      const serializedTasks: Record<string, Object> = {};
+      const iterator = tasksMap.entries();
+      let entry = iterator.next();
+      while (!entry.done) {
+        const pair = entry.value;
+        const storedTaskId = pair[0];
+        const storedTask = pair[1];
+        serializedTasks[storedTaskId] = TaskWorker.toSerializableTask(storedTask);
+        entry = iterator.next();
+      }
+      prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
       prefs.flushSync();
-
     });
 
     return true;
@@ -364,7 +358,9 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     plugin: BDPlugin | undefined = undefined,
     taskId: string = "bgd_non_existent_id"
   ): MethodChannel | undefined {
-    return plugin?.backgroundChannel;
+    return plugin?.backgroundChannel
+      ?? BDPlugin.bgChannelByTaskId.get(taskId)
+      ?? BDPlugin.firstBackgroundChannel;
   }
 
   static taskRequiresWifi(task: Task): Boolean {
@@ -486,12 +482,20 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     let taskListJsonString = args[0] as string;
     let notificationConfigListJsonString = args[1] as string;
 
-    const task = new taskpool.Task(methodEnqueueAll_task, taskListJsonString,notificationConfigListJsonString,result);
-    taskpool.execute(task).then(() => {
-      console.info('execute methodEnqueueAll success');
-    }).catch((e: BusinessError) => {
-      console.error(`execute methodEnqueueAll error: ${e.message}`);
-    })
+    const task = new taskpool.Task(
+      methodEnqueueAll_task,
+      taskListJsonString,
+      notificationConfigListJsonString
+    );
+    taskpool.execute(task)
+      .then((results: Array<boolean>) => {
+        result.success(results);
+        console.info('execute methodEnqueueAll success');
+      })
+      .catch((e: BusinessError) => {
+        console.error(`execute methodEnqueueAll error: ${e.message}`);
+        result.success([]);
+      });
   }
 }
         //

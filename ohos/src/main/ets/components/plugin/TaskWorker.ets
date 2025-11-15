@@ -1,5 +1,16 @@
 import { collections, MessageEvents, taskpool, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS'
-import { ExceptionType, Task, TaskException, TaskProgressUpdate, TaskStatus, TaskStatus_fun } from './Models'
+import {
+  BaseDirectory,
+  ExceptionType,
+  Task,
+  TaskException,
+  TaskOptions,
+  TaskOptionsJSON,
+  TaskProgressUpdate,
+  TaskStatus,
+  TaskStatus_fun,
+  Updates,
+} from './Models'
 import dataPreferences from '@ohos.data.preferences'
 import { common } from '@kit.AbilityKit'
 import BDPlugin from './BDPlugin'
@@ -33,11 +44,15 @@ export class TaskWorker {
   static readonly bufferSize = 2 << 12;
   static readonly taskTimeoutMillis = 9 * 60 * 1000; // 9 minutes
 
+  public static taskToJsonString(task: Task): string {
+    return JSON.stringify(TaskWorker.toSerializableTask(task));
+  }
+
   public static async postOnBackgroundChannel(
     method: string, task: Task, arg: ESObject, onFail?: () => Promise<void>
   ) {
     let bgPost = new BackgroundPost(task, method, arg, onFail)
-    QueueService.postOnBackgroundChannel(bgPost)
+    return QueueService.postOnBackgroundChannel(bgPost)
   }
 
   /**
@@ -50,7 +65,7 @@ export class TaskWorker {
     downloadSpeed: number = -1.0, timeRemaining: number = -1000
   ) {
     if (task.providesProgressUpdates()) {
-      TaskWorker.postOnBackgroundChannel(
+      await TaskWorker.postOnBackgroundChannel(
         "progressUpdate", task,
         [progress, expectedFileSize, downloadSpeed, timeRemaining],
         async () => {
@@ -79,11 +94,210 @@ export class TaskWorker {
   ) {
     BDPlugin.prefsLock.lockAsync(() => {
       let jsonString = prefs.getSync(prefsKey, "{}") as string
-      let mapByTaskId = JSON.parse(jsonString) as Map<string, string>
-      mapByTaskId.set(taskId, item);
+      const mapByTaskId = jsonString ? JSON.parse(jsonString) as Record<string, string> : {}
+      mapByTaskId[taskId] = item;
       prefs.putSync(prefsKey, JSON.stringify(mapByTaskId));
       prefs.flushSync();
     })
+  }
+
+  private static mapToRecord(map?: Map<string, string> | collections.Map<string, string>): Record<string, string> | undefined {
+    if (!map) {
+      return undefined
+    }
+    const record: Record<string, string> = {}
+    const iterator = (map as unknown as { entries?: () => IterableIterator<[string, string]> }).entries
+    if (typeof iterator === 'function') {
+      for (const [key, value] of iterator.call(map)) {
+        if (value !== undefined) {
+          record[key] = value
+        }
+      }
+    } else if (typeof (map as unknown as { forEach?: (callback: (value: string, key: string) => void) => void }).forEach === 'function') {
+      (map as unknown as { forEach: (callback: (value: string, key: string) => void) => void }).forEach((value, key) => {
+        if (value !== undefined) {
+          record[key] = value
+        }
+      })
+    }
+    return record
+  }
+
+  private static arrayToList(array?: collections.Array<string>): string[] | undefined {
+    if (!array) {
+      return undefined
+    }
+    const result: string[] = []
+    array.forEach((value: string) => {
+      result.push(value)
+    })
+    return result
+  }
+
+  private static filterHeaders(headers?: Map<string, string> | collections.Map<string, string>): Map<string, string> | undefined {
+    if (!headers) {
+      return undefined
+    }
+    const lowered = new Map<string, string>()
+    const iterator = (headers as unknown as { entries?: () => IterableIterator<[string, string]> }).entries
+    if (typeof iterator === 'function') {
+      for (const [key, value] of iterator.call(headers)) {
+        if (value !== undefined) {
+          lowered.set(key.toLowerCase(), value)
+        }
+      }
+    } else if (typeof (headers as unknown as { forEach?: (callback: (value: string, key: string) => void) => void }).forEach === 'function') {
+      (headers as unknown as { forEach: (callback: (value: string, key: string) => void) => void }).forEach((value, key) => {
+        if (value !== undefined) {
+          lowered.set(key.toLowerCase(), value)
+        }
+      })
+    }
+    return lowered
+  }
+
+  public static toSerializableTask(task: Task): Record<string, Object> {
+    const headers = TaskWorker.mapToRecord(task.headers)
+    const fields = TaskWorker.mapToRecord(task.fields)
+    const urls = TaskWorker.arrayToList(task.urls)
+
+    const base = {
+      taskId: task.taskId,
+      url: task.url,
+      filename: task.filename,
+      headers,
+      httpRequestMethod: task.httpRequestMethod,
+      chunks: task.chunks,
+      fileField: task.fileField,
+      mimeType: task.mimeType,
+      fields,
+      directory: task.directory,
+      baseDirectory: task.baseDirectory as number,
+      group: task.group,
+      updates: task.updates as number,
+      requiresWiFi: task.requiresWiFi,
+      retries: task.retries,
+      retriesRemaining: task.retriesRemaining,
+      allowPause: task.allowPause,
+      priority: task.priority,
+      metaData: task.metaData,
+      displayName: task.displayName,
+      creationTime: task.creationTime,
+      taskType: task.taskType,
+      urls,
+    }
+
+    if (task.post !== undefined) {
+      base.post = task.post
+    }
+
+    if (task.options !== undefined) {
+      const serializedOptions = TaskWorker.serializeTaskOptions(task.options)
+      if (serializedOptions) {
+        base.options = serializedOptions
+      }
+    }
+
+    return base
+  }
+
+  private static recordToCollectionsMap(record?: Record<string, string>): collections.Map<string, string> {
+    const map = new collections.Map<string, string>()
+    if (record) {
+      for (const [key, value] of Object.entries(record)) {
+        if (value !== undefined) {
+          map.set(key, value)
+        }
+      }
+    }
+    return map
+  }
+
+  private static listToCollectionsArray(list?: string[]): collections.Array<string> {
+    const array = new collections.Array<string>()
+    if (list) {
+      list.forEach((value) => {
+        if (typeof (array as unknown as { push?: (item: string) => number }).push === 'function') {
+          (array as unknown as { push: (item: string) => number }).push(value)
+        } else if (typeof (array as unknown as { add?: (item: string) => void }).add === 'function') {
+          (array as unknown as { add: (item: string) => void }).add(value)
+        }
+      })
+    }
+    return array
+  }
+
+  public static fromSerializableTask(data: Record<string, Object>): Task {
+    const headers = TaskWorker.recordToCollectionsMap(data['headers'] as Record<string, string> | undefined)
+    const fields = TaskWorker.recordToCollectionsMap(data['fields'] as Record<string, string> | undefined)
+    const urls = TaskWorker.listToCollectionsArray(data['urls'] as string[] | undefined)
+
+    return new Task({
+      taskId: data['taskId'] as string | undefined,
+      url: data['url'] as string | undefined,
+      filename: data['filename'] as string | undefined,
+      headers,
+      httpRequestMethod: data['httpRequestMethod'] as string | undefined,
+      chunks: data['chunks'] as number | undefined,
+      post: data['post'] as string | undefined,
+      fileField: data['fileField'] as string | undefined,
+      mimeType: data['mimeType'] as string | undefined,
+      fields,
+      directory: data['directory'] as string | undefined,
+      baseDirectory: TaskWorker.resolveBaseDirectory(data['baseDirectory'] as number | BaseDirectory | undefined),
+      group: data['group'] as string | undefined,
+      updates: TaskWorker.resolveUpdates(data['updates'] as number | Updates | undefined),
+      requiresWiFi: data['requiresWiFi'] as boolean | undefined,
+      retries: data['retries'] as number | undefined,
+      retriesRemaining: data['retriesRemaining'] as number | undefined,
+      allowPause: data['allowPause'] as boolean | undefined,
+      priority: data['priority'] as number | undefined,
+      metaData: data['metaData'] as string | undefined,
+      displayName: data['displayName'] as string | undefined,
+      creationTime: data['creationTime'] as number | undefined,
+      options: TaskWorker.deserializeTaskOptions(data['options'] as Record<string, Object> | TaskOptions | undefined),
+      taskType: data['taskType'] as string | undefined,
+      urls,
+    })
+  }
+
+  private static resolveBaseDirectory(value: number | BaseDirectory | undefined): BaseDirectory {
+    if (typeof value === 'number' && BaseDirectory[value] !== undefined) {
+      return value as BaseDirectory
+    }
+    if (value !== undefined) {
+      return value as BaseDirectory
+    }
+    return BaseDirectory.applicationDocuments
+  }
+
+  private static resolveUpdates(value: number | Updates | undefined): Updates {
+    if (typeof value === 'number' && Updates[value] !== undefined) {
+      return value as Updates
+    }
+    if (value !== undefined) {
+      return value as Updates
+    }
+    return Updates.status
+  }
+
+  private static serializeTaskOptions(options?: TaskOptions): TaskOptionsJSON | undefined {
+    if (!options) {
+      return undefined
+    }
+    return options.toJSON()
+  }
+
+  private static deserializeTaskOptions(
+    raw?: Record<string, Object> | TaskOptions,
+  ): TaskOptions | undefined {
+    if (!raw) {
+      return undefined
+    }
+    if (raw instanceof TaskOptions) {
+      return raw
+    }
+    return TaskOptions.from(raw as TaskOptionsJSON)
   }
 
   public static async processStatusUpdate(
@@ -114,118 +328,123 @@ export class TaskWorker {
         }
         return
       }
-
-      // Normal status update
-
-      // Check if the task was 'programmatically' canceled, in which case a TaskStatus.failed may be
-      // incorrectly generated by the WorkManager, so we change it to 'canceled'
-      let modifiedStatus: TaskStatus =
-        BDPlugin.canceledTaskIds.has(task.taskId) ? TaskStatus.canceled : status
-      //TaskStatus.failed
-      let retryNeeded = modifiedStatus as number == TaskStatus.failed && task.retriesRemaining > 0
-      let canSendStatusUpdate = true
-
-      switch (modifiedStatus) {
-        case TaskStatus.complete:
-          TaskWorker.processProgressUpdate(task, 1.0, prefs);
-          break;
-        case TaskStatus.failed as number:
-          if (!retryNeeded) {
-            TaskWorker.processProgressUpdate(task, -1.0, prefs)
-          }
-          break;
-        case TaskStatus.canceled:
-          canSendStatusUpdate = TaskWorker.canSendCancellation(task)
-          if (canSendStatusUpdate) {
-            BDPlugin.cancelUpdateSentForTaskId.set(task.taskId, systemDateTime.getTime(false));
-            TaskWorker.processProgressUpdate(task, -2.0, prefs)
-          }
-          break;
-        case TaskStatus.notFound:
-          TaskWorker.processProgressUpdate(task, -3.0, prefs)
-          break;
-        case TaskStatus.paused as number:
-          TaskWorker.processProgressUpdate(task, -5.0, prefs)
-          break;
-        default:
-          break;
+      if (BDPlugin.tasksToReEnqueue.size == 0) {
+        WiFi.reEnqueue(undefined)
       }
+    }
+
+    // Normal status update
+
+    // Check if the task was 'programmatically' canceled, in which case a TaskStatus.failed may be
+    // incorrectly generated by the WorkManager, so we change it to 'canceled'
+    let modifiedStatus: TaskStatus =
+      BDPlugin.canceledTaskIds.has(task.taskId) ? TaskStatus.canceled : status
+    let retryNeeded = modifiedStatus as number == TaskStatus.failed && task.retriesRemaining > 0
+    let canSendStatusUpdate = true
+
+    switch (modifiedStatus) {
+      case TaskStatus.complete:
+        TaskWorker.processProgressUpdate(task, 1.0, prefs);
+        break;
+      case TaskStatus.failed as number:
+        if (!retryNeeded) {
+          TaskWorker.processProgressUpdate(task, -1.0, prefs)
+        }
+        break;
+      case TaskStatus.canceled:
+        canSendStatusUpdate = TaskWorker.canSendCancellation(task)
+        if (canSendStatusUpdate) {
+          BDPlugin.cancelUpdateSentForTaskId.set(task.taskId, systemDateTime.getTime(false));
+          TaskWorker.processProgressUpdate(task, -2.0, prefs)
+        }
+        break;
+      case TaskStatus.notFound:
+        TaskWorker.processProgressUpdate(task, -3.0, prefs)
+        break;
+      case TaskStatus.paused as number:
+        TaskWorker.processProgressUpdate(task, -5.0, prefs)
+        break;
+      default:
+        break;
+    }
 
 
-      let para1: TaskStatusUpdatePara = {
-        task: task,
-        taskStatus: modifiedStatus,
-        exception: modifiedStatus == TaskStatus.failed as number ?
-          TaskWorker.taskException ?? new TaskException(ExceptionType.general) : undefined,
-        responseBody: responseBody,
-        responseHeaders: new Map<string, string>(Array.from(responseHeaders.entries())
-          .filter(([_, v]) => v !== undefined)),
-        mimeType: mimeType,
-        charSet: charSet
-      }
-      let para2: TaskStatusUpdatePara = {
-        task: task,
-        taskStatus: modifiedStatus,
-        exception: undefined,
-        responseBody: undefined,
-        responseHeaders: undefined,
-        mimeType: undefined,
-        charSet: undefined
-      }
-      let taskStatusUpdate =
-        TaskStatus_fun.isFinalState(modifiedStatus) ? new TaskStatusUpdate(para1) : new TaskStatusUpdate(para2)
+    const isFinal = TaskStatus_fun.isFinalState(modifiedStatus)
+    const includeStatusCode =
+      modifiedStatus == TaskStatus.complete || modifiedStatus == TaskStatus.notFound
+    const loweredHeaders = TaskWorker.filterHeaders(responseHeaders)
+    const resolvedException =
+      isFinal && modifiedStatus == TaskStatus.failed as number
+        ? taskException ?? new TaskException(ExceptionType.general)
+        : undefined
 
-      if (canSendStatusUpdate && (task.providesStatusUpdates() || retryNeeded)) {
-        let arg = taskStatusUpdate.argList
-        TaskWorker.postOnBackgroundChannel("statusUpdate", task, arg, async () => {
-          // unsuccessful post, so store in local prefs
-          console.error(TaskWorker.TAG, "Could not post status update -> storing locally")
-          TaskWorker.storeLocally(
-            BDPlugin.keyStatusUpdateMap,
-            task.taskId,
-            JSON.stringify(taskStatusUpdate),
-            prefs
-          )
-        })
-      }
+    let taskStatusUpdate = new TaskStatusUpdate({
+      task: task,
+      taskStatus: modifiedStatus,
+      exception: resolvedException,
+      responseBody: isFinal ? responseBody : undefined,
+      responseHeaders: isFinal ? loweredHeaders : undefined,
+      responseStatusCode: includeStatusCode ? responseStatusCode : undefined,
+      mimeType: isFinal ? mimeType : undefined,
+      charSet: isFinal ? charSet : undefined,
+    })
 
-      // if task is in final state, cancel the WorkManager job (if failed),
-      // remove task from persistent storage, clean up references to taskId
-      // and invoke the onTaskFinishedCallback if necessary
-      if (TaskStatus_fun.isFinalState(modifiedStatus)) {
-        if (modifiedStatus == TaskStatus.failed as number) {
-          // Cancel the WorkManager job.
-          // This is to avoid the WorkManager restarting a job that was
-          // canceled because job constraints are violated (e.g. network unavailable)
-          // We want to manage cancellation ourselves, so we cancel the job
+    if (canSendStatusUpdate && (task.providesStatusUpdates() || retryNeeded)) {
+      let arg = taskStatusUpdate.argList
+      await TaskWorker.postOnBackgroundChannel("statusUpdate", task, arg, async () => {
+        // unsuccessful post, so store in local prefs
+        console.error(TaskWorker.TAG, "Could not post status update -> storing locally")
+        TaskWorker.storeLocally(
+          BDPlugin.keyStatusUpdateMap,
+          task.taskId,
+          JSON.stringify(taskStatusUpdate),
+          prefs
+        )
+      })
+    }
 
-          let workManager = await workScheduler.obtainAllWorks();
+    // if task is in final state, cancel the WorkManager job (if failed),
+    // remove task from persistent storage, clean up references to taskId
+    // and invoke the onTaskFinishedCallback if necessary
+    if (isFinal) {
+      if (modifiedStatus == TaskStatus.failed as number) {
+        // Cancel the WorkManager job.
+        // This is to avoid the WorkManager restarting a job that was
+        // canceled because job constraints are violated (e.g. network unavailable)
+        // We want to manage cancellation ourselves, so we cancel the job
 
-          for (let i = 0; i < workManager.length; i++) {
-            if (workManager[i].parameters['taskId'] == task.taskId) {
-              try {
-                workScheduler.stopWork(workManager[i], false);
-              } catch (e) {
-                console.error(
-                  BDPlugin.TAG,
-                  "Could not kill task wih id ${task.taskId} in operation: $operation"
-                )
-              }
+        let workManager = await workScheduler.obtainAllWorks();
+
+        for (let i = 0; i < workManager.length; i++) {
+          if (workManager[i].parameters['taskId'] == task.taskId) {
+            try {
+              workScheduler.stopWork(workManager[i], false);
+            } catch (e) {
+              console.error(
+                BDPlugin.TAG,
+                "Could not kill task wih id ${task.taskId} in operation: $operation"
+              )
             }
           }
         }
-        BDPlugin.prefsLock.lockAsync<void>(async () => {
-          let tasksMap = await getTaskMap(prefs)
-          tasksMap.delete(task.taskId)
-          prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(tasksMap));
-          prefs.flushSync();
-          // 执行某些操作
-        });
-
-        QueueService.cleanupTaskId(task.taskId)
-        if (task.options?.hasOnFinishCallback() == true) {
-          Callbacks.invokeOnTaskFinishedCallback(context, taskStatusUpdate)
+      }
+      BDPlugin.prefsLock.lockAsync<void>(async () => {
+        let tasksMap = await getTaskMap(prefs)
+        tasksMap.delete(task.taskId)
+        const serializedTasks: Record<string, Object> = {}
+        for (const entry of tasksMap.entries()) {
+          const id = entry[0]
+          const storedTask = entry[1]
+          serializedTasks[id] = TaskWorker.toSerializableTask(storedTask)
         }
+        prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
+        prefs.flushSync();
+        // 执行某些操作
+      });
+
+      QueueService.cleanupTaskId(task.taskId)
+      if (task.options?.hasOnFinishCallback() == true) {
+        Callbacks.invokeOnTaskFinishedCallback(context, taskStatusUpdate)
       }
     }
   }
@@ -315,12 +534,14 @@ export class TaskWorker {
 
 
 
-export function getTaskMap(prefs: dataPreferences.Preferences):Map<string, Task> {
-  BDPlugin.prefsLock.lockAsync<Map<string,Task>>(() => {
-    let tasksMapJson:string = prefs.getSync(BDPlugin.keyTasksMap, "{}") as string?? "{}" as string
-    return JSON.parse(tasksMapJson) as Map<string,Task>
-  });
-  return new Map<string,Task>();
+export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task> {
+  const tasksMapJson = (prefs.getSync(BDPlugin.keyTasksMap, "{}") as string) ?? "{}"
+  const parsed = JSON.parse(tasksMapJson) as Record<string, Object>
+  const result = new Map<string, Task>()
+  for (const [taskId, taskData] of Object.entries(parsed)) {
+    result.set(taskId, TaskWorker.fromSerializableTask(taskData as Record<string, Object>))
+  }
+  return result
 }
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
