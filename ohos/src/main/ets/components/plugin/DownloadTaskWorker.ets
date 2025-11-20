@@ -280,7 +280,9 @@ class DownloadTaskWorker extends TaskWorker {
           this.deleteTempFile()
           return TaskStatus.canceled
         case TaskStatus.paused as number:
-          TaskWorker.workerShareableData!.pausedTaskIds.delete(this.task.taskId);  //share
+          await TaskWorker.workerShareableData!.withLock(() => {
+            TaskWorker.workerShareableData!.pausedTaskIds.delete(this.task!.taskId);  //share
+          })
           if (this.taskCanResume) {
             this.processResumeData(new ResumeData({
               task: this.task,
@@ -291,17 +293,21 @@ class DownloadTaskWorker extends TaskWorker {
             return TaskStatus.paused
           }
 
-          if (TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task!) && this.serverAcceptsRanges) {
+          let shouldStoreResumeData = false;
+          await TaskWorker.workerShareableData!.withLock(() => {
+            shouldStoreResumeData = TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task!) && this.serverAcceptsRanges
+          })
 
-          }
-
-          if (TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task) && this.serverAcceptsRanges) {
-            TaskWorker.workerShareableData!.localResumeData.set(this.task.taskId, new ResumeData({
+          if (shouldStoreResumeData) {
+            const resumeData = new ResumeData({
               task: this.task,
               data: this.tempFilePath,
               requiredStartByte: this.bytesTotal + this.startByte,
               eTag: this.eTagHeader
-            }))
+            })
+            await TaskWorker.workerShareableData!.withLock(() => {
+              TaskWorker.workerShareableData!.localResumeData.set(this.task!.taskId, resumeData)
+            })
             return TaskStatus.paused
           }
           this.deleteTempFile()

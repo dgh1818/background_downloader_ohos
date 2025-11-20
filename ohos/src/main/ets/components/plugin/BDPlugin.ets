@@ -67,6 +67,12 @@ export class WorkerShareableData {
   public canceledTaskIds:collections.Set<string> = new collections.Set<string>()
   public cancelUpdateSentForTaskId:collections.Map<string, number> = new collections.Map<string, number>();
 
+  public lock: ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
+
+  public async withLock(action: () => void | Promise<void>): Promise<void> {
+    await this.lock.lockAsync(action);
+  }
+
   public command: string = "";
   // public requireWifi?: boolean = false;
   // public triggerUpdateDelay?: number = 5000;
@@ -129,9 +135,10 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     if (BDPlugin.holdingQueue) {
       BDPlugin.holdingQueue.hostByTaskId.set(task.taskId, task.host() ?? "");
     }
-    BDPlugin.workerShareableData.canceledTaskIds.delete(task.taskId);
-
-    BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(task.taskId);
+    await BDPlugin.workerShareableData.withLock(() => {
+      BDPlugin.workerShareableData.canceledTaskIds.delete(task.taskId);
+      BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(task.taskId);
+    });
     console.error(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}8`);
 
     const parameters: Record<string, string | number | boolean> = {};
@@ -139,7 +146,9 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     console.error(BDPlugin.TAG, `before if (notificationConfigJsonString !== undefined) {`);
     if (notificationConfigJsonString !== undefined) {
       parameters[TaskWorkerKey.keyNotificationConfig] = notificationConfigJsonString;
-      BDPlugin.workerShareableData.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
+      await BDPlugin.workerShareableData.withLock(() => {
+        BDPlugin.workerShareableData.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
+      });
     }
     if (resumeData !== undefined) {
       parameters[TaskWorkerKey.keyResumeDataData] = resumeData.data;

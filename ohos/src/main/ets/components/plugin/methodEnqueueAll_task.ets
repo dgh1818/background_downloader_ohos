@@ -68,6 +68,7 @@ export async function methodEnqueueAll_task(
       try {
 
         if (BDPlugin.holdingQueue == undefined) {
+          console.error("enter BDPlugin.holdingQueue == undefined" + task.taskId);
           // 直接入队
           return await BDPlugin.doEnqueue(
             uiContext,
