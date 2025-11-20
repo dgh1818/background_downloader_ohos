@@ -1,7 +1,7 @@
 
 import { common, sendableContextManager } from '@kit.AbilityKit';
 import { collections, MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
-import { SendableTask, Task, TaskStatus } from './Models';
+import { Task, TaskStatus } from './Models';
 import { TaskWorker } from './TaskWorker';
 import { hash } from '@kit.CoreFileKit';
 import { notificationManager } from '@kit.NotificationKit';
@@ -28,7 +28,7 @@ class UpdateNotificationWorker extends TaskWorker {
   static readonly keyTaskStatusOrdinal = "taskStatusOrdinal"
 
 
-  constructor(applicationContext: common.UIAbilityContext,workerParams?:Map<string, string | number>) {
+  constructor(applicationContext: common.UIAbilityContext,workerParams?:collections.Map<string, string | number>) {
     //constructor(applicationContext: common.UIAbilityContext,workerParams: Map<string,ESObject>) {
     super(applicationContext,workerParams);
 

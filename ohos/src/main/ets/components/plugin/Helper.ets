@@ -139,7 +139,8 @@ export function insufficientSpace(applicationContext: common.UIAbilityContext, c
   }
 
   let remainingBytes = 0;
-  BDPlugin.remainingBytesToDownload.forEach((value) => remainingBytes += value);
+
+  TaskWorker.workerShareableData!.remainingBytesToDownload.forEach((value) => remainingBytes += value);
   return available - (remainingBytes + contentLength) < (checkValue << 20);
 }
 

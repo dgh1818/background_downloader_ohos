@@ -3,7 +3,7 @@ import { common, sendableContextManager } from "@kit.AbilityKit";
 import { TaskWorker } from "./TaskWorker";
 import { worker } from "@kit.ArkTS";
 //import { UpdateNotificationWorker } from "./UpdateNotificationWorker";
-import { SendableTask, TaskStatus } from "./Models";
+import { TaskStatus } from "./Models";
 
 /**
  * Notification configuration object
@@ -94,10 +94,10 @@ export class NotificationService {
     const notificationConfig = JSON.parse(notificationConfigJsonString) as NotificationConfig;
     const groupNotificationId = notificationConfig.groupNotificationId;
     if (groupNotificationId.length !== 0) {
-      const serializedTask = new SendableTask(item.task);
+      //const serializedTask = new SendableTask(item.task);
       NotificationService.createUpdateNotificationWorker(
         item.context,
-        JSON.stringify(serializedTask),
+        JSON.stringify(item.task),
         notificationConfigJsonString,
         success ? TaskStatus.enqueued : TaskStatus.failed
       );

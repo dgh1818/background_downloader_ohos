@@ -149,8 +149,8 @@ export class QueueService {
         }
         BDPlugin.flutterEngineByTaskId.delete(pending.taskId);
         BDPlugin.bgChannelByTaskId.delete(pending.taskId);
-        BDPlugin.localResumeData.delete(pending.taskId);
-        BDPlugin.notificationConfigJsonStrings.delete(pending.taskId);
+        BDPlugin.workerShareableData.localResumeData.delete(pending.taskId);
+        BDPlugin.workerShareableData.notificationConfigJsonStrings.delete(pending.taskId);
       } catch (error) {
         console.error(TAG, 'Error cleaning up task id', error);
       } finally {
