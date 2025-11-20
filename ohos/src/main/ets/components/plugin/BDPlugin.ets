@@ -43,6 +43,36 @@ import { ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
 import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 import { methodEnqueueAll_task } from "./methodEnqueueAll_task";
 
+@Sendable
+export class WorkerShareableData {
+  constructor(
+
+    // requireWifi?: boolean | undefined,
+    // triggerUpdateDelay?: number | undefined,
+    // triggerMaxDelay?: number | undefined,
+  ) {
+
+
+    // this.requireWifi = requireWifi;
+    // this.triggerUpdateDelay = triggerUpdateDelay;
+    // this.triggerMaxDelay = triggerMaxDelay;
+  }
+
+  public haveLoggedProxyMessage:boolean = false;
+  public remainingBytesToDownload:collections.Map<string, number> = new collections.Map<string, number>();
+  public pausedTaskIds:collections.Set<string> = new collections.Set<string>();
+  public tasksToReEnqueue:collections.Set<Task> = new collections.Set<Task>();
+  public localResumeData:collections.Map<string, ResumeData> = new collections.Map<string, ResumeData>()
+  public notificationConfigJsonStrings:collections.Map<string, string> = new collections.Map<string, string>();
+  public canceledTaskIds:collections.Set<string> = new collections.Set<string>()
+  public cancelUpdateSentForTaskId:collections.Map<string, number> = new collections.Map<string, number>();
+
+  public command: string = "";
+  // public requireWifi?: boolean = false;
+  // public triggerUpdateDelay?: number = 5000;
+  // public triggerMaxDelay?: number = 50000;
+}
+
 export default class BDPlugin implements FlutterPlugin, MethodCallHandler, AbilityAware {
   public static readonly TAG = "BackgroundDownloader"
   public static readonly keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
@@ -71,28 +101,19 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static bgChannelByTaskId = new Map<string, MethodChannel>()
   public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
   public static requireWifi = RequireWiFi.asSetByTask
+  public static workerShareableData:WorkerShareableData = new WorkerShareableData();
 
-  // global setting
-  public static localResumeData = new Map<string, ResumeData>()
-  // by taskId, for pause notifications
-  public static cancelUpdateSentForTaskId = new Map<string, number>()
   // <taskId, timeMillis>
-  public static pausedTaskIds = new Set<string>()
-  // <taskId>, acts as flag
-  public static canceledTaskIds = new Set<string>()
   // <taskId>, acts as flag
   //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
-  public static tasksToReEnqueue = new Set<Task>()
   // for when WiFi requirement changes
   public static taskIdsRequiringWiFi = new Set<string>()
-  // ensures correctness when enqueueing task
-  public static notificationConfigJsonStrings = new Map<string, string>()
+
   // by taskId
   public static forceFailPostOnBackgroundChannel = false
   public static prefsLock = new ArkTSUtils.locks.AsyncLock()
-  public static remainingBytesToDownload = new Map<string, number>()
   // <taskId, size>
-  public static haveLoggedProxyMessage = false
+
   public static holdingQueue?: HoldingQueue
   public static latestPluginInstance?: BDPlugin;
 
@@ -108,9 +129,9 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     if (BDPlugin.holdingQueue) {
       BDPlugin.holdingQueue.hostByTaskId.set(task.taskId, task.host() ?? "");
     }
-    BDPlugin.canceledTaskIds.delete(task.taskId);
+    BDPlugin.workerShareableData.canceledTaskIds.delete(task.taskId);
 
-    BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId);
+    BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(task.taskId);
     console.error(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}8`);
 
     const parameters: Record<string, string | number | boolean> = {};
@@ -118,7 +139,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     console.error(BDPlugin.TAG, `before if (notificationConfigJsonString !== undefined) {`);
     if (notificationConfigJsonString !== undefined) {
       parameters[TaskWorkerKey.keyNotificationConfig] = notificationConfigJsonString;
-      BDPlugin.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
+      BDPlugin.workerShareableData.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
     }
     if (resumeData !== undefined) {
       parameters[TaskWorkerKey.keyResumeDataData] = resumeData.data;
@@ -185,7 +206,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     //let requireWifi = BDPlugin.requireWifi.valueOf() == 1 ? true:false;
     let requireWifi = false;
 
-    let taskWorkerData = new Map<string,number|string|boolean|undefined|ResumeData>();
+    let taskWorkerData = new collections.Map<string,number|string|boolean|undefined|ResumeData>();
 
     taskWorkerData.set(TaskWorkerKey.keyTask, TaskWorker.taskToJsonString(task));
     taskWorkerData.set(TaskWorkerKey.keyNotificationConfig,notificationConfigJsonString);
@@ -193,15 +214,14 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     taskWorkerData.set(TaskWorkerKey.keyStartByte,resumeData?.requiredStartByte);
     taskWorkerData.set(TaskWorkerKey.keyETag,resumeData?.eTag);
 
-    let sendableContext = sendableContextManager.convertFromContext(context);
     //let sendableObject:SendableObject = new SendableObject("startWork",sendableContext,taskWorkerData)
 
-
-
-
-
-    downloadTaskWorker.postMessage({ buffers: BDPlugin.keyTasksMap,
-                                      command:"startWork"}, [])
+    downloadTaskWorker.postMessageWithSharedSendable(
+      { command:"startWork",
+        sendableContext:BDPlugin.sendableUIContext,
+        taskWorkerData: taskWorkerData,
+        workerShareableData:BDPlugin.workerShareableData,
+        })
 
     //downloadTaskWorker.postMessageWithSharedSendable(sendableObject);
     //.startWork(request);
@@ -554,49 +574,28 @@ private updateSharedPreferences(key: string, value?: number) {
       }
     })
 
-    const task = new taskpool.Task(
-      methodEnqueueAll_task,
-      taskListJsonString,
-      notificationConfigListJsonString,
-      BDPlugin.holdingQueue,
-      BDPlugin.sendableUIContext
-    );
-    taskpool.execute(task)
-      .then((results: object) => {
-        result.success(results as Array<boolean>);
-        console.info('execute methodEnqueueAll success');
-      })
-      .catch((e: BusinessError) => {
-        console.error(`execute methodEnqueueAll error: ${e.message}`);
-        result.success([]);
-      });
+    methodEnqueueAll_task(taskListJsonString,notificationConfigListJsonString);
+
+    // const task = new taskpool.Task(
+    //   methodEnqueueAll_task,
+    //   taskListJsonString,
+    //   notificationConfigListJsonString,
+    //   BDPlugin.holdingQueue,
+    //   BDPlugin.sendableUIContext
+    // );
+    // taskpool.execute(task)
+    //   .then((results: object) => {
+    //     result.success(results as Array<boolean>);
+    //     console.info('execute methodEnqueueAll success');
+    //   })
+    //   .catch((e: BusinessError) => {
+    //     console.error(`execute methodEnqueueAll error: ${e.message}`);
+    //     result.success([]);
+    //   });
   }
 }
 
-export class WorkerObject {
-  constructor(
-    command: string,
-    uiContext: sendableContextManager.SendableContext,
-    taskWorkerData: Map<string, number | string | boolean | undefined | ResumeData>,
-    // requireWifi?: boolean | undefined,
-    // triggerUpdateDelay?: number | undefined,
-    // triggerMaxDelay?: number | undefined,
-  ) {
-    this.command = command;
-    this.sendableContext = uiContext;
-    this.taskWorkerData = taskWorkerData;
-    // this.requireWifi = requireWifi;
-    // this.triggerUpdateDelay = triggerUpdateDelay;
-    // this.triggerMaxDelay = triggerMaxDelay;
-  }
 
-  public command: string = "";
-  public sendableContext: sendableContextManager.SendableContext;
-  public taskWorkerData:Map<string, number | string | boolean | undefined | ResumeData>;
-  // public requireWifi?: boolean = false;
-  // public triggerUpdateDelay?: number = 5000;
-  // public triggerMaxDelay?: number = 50000;
-}
         //
         // class TaskScope {
         //   private tasks: Set<taskpool.Task>; // 保存 taskpool.Task 实例

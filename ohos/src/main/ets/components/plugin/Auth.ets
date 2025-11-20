@@ -1,15 +1,18 @@
+import { collections } from "@kit.ArkTS";
+
+@Sendable
 export class Auth {
   public accessToken?: string;
-  public accessHeaders: Map<string, string>;
-  public accessQueryParams: Map<string, string>;
+  public accessHeaders: collections.Map<string, string>;
+  public accessQueryParams: collections.Map<string, string>;
   public accessTokenExpiryTime?: number;
   public refreshToken?: string;
-  public refreshHeaders: Map<string, string>;
-  public refreshQueryParams: Map<string, string>;
+  public refreshHeaders: collections.Map<string, string>;
+  public refreshQueryParams: collections.Map<string, string>;
   public refreshUrl?: string;
   public onAuthRawHandle?: number;
 
-  constructor(accessHeaders: Map<string, string>,accessQueryParams: Map<string, string>,refreshHeaders: Map<string, string>,refreshQueryParams: Map<string, string>,accessToken?: string,accessTokenExpiryTime?: number,refreshToken?: string,refreshUrl?: string,onAuthRawHandle?: number) {
+  constructor(accessHeaders: collections.Map<string, string>,accessQueryParams: collections.Map<string, string>,refreshHeaders: collections.Map<string, string>,refreshQueryParams: collections.Map<string, string>,accessToken?: string,accessTokenExpiryTime?: number,refreshToken?: string,refreshUrl?: string,onAuthRawHandle?: number) {
     this.accessToken = accessToken;
     this.accessHeaders = accessHeaders;
     this.accessQueryParams = accessQueryParams;
@@ -21,8 +24,8 @@ export class Auth {
     this.onAuthRawHandle = onAuthRawHandle;
   }
 
-  private expandMap(map: Map<string, string>): Map<string, string> {
-    const expanded = new Map<string, string>();
+  private expandMap(map: collections.Map<string, string>): collections.Map<string, string> {
+    const expanded = new collections.Map<string, string>();
     map.forEach((value, key) => {
       let newValue = value;
       if (this.accessToken !== undefined) {
@@ -36,17 +39,17 @@ export class Auth {
     return expanded;
   }
 
-  getExpandedAccessHeaders(): Map<string, string> {
+  getExpandedAccessHeaders(): collections.Map<string, string> {
     return this.expandMap(this.accessHeaders);
   }
 
-  getExpandedAccessQueryParams(): Map<string, string> {
+  getExpandedAccessQueryParams(): collections.Map<string, string> {
     return this.expandMap(this.accessQueryParams);
   }
 
   addOrUpdateQueryParams(
     targetUrl: string,
-    queryParams?: Map<string, string>
+    queryParams?: collections.Map<string, string>
   ): string {
 
 

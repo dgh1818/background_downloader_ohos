@@ -1,15 +1,13 @@
 import { collections, ErrorEvent, MessageEvents, taskpool, ThreadWorkerGlobalScope, util, worker } from '@kit.ArkTS'
 import { ExceptionType,
   ResumeData,
-  SendableTask,
-  SendableTaskOptions,
   Task, TaskException,
   TaskOptions,
   TaskProgressUpdate, TaskStatus, TaskStatus_fun,
   Task_interface } from './Models'
 import dataPreferences from '@ohos.data.preferences'
 import { common, sendableContextManager } from '@kit.AbilityKit'
-import BDPlugin from './BDPlugin'
+import BDPlugin, { WorkerShareableData } from './BDPlugin'
 import { WiFi } from './WIFI'
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
 import { NotificationConfig } from './Notifications'
@@ -18,7 +16,7 @@ import { systemDateTime } from '@kit.BasicServicesKit'
 import { TaskStatusUpdate, TaskStatusUpdatePara } from './Models'
 import { workScheduler } from '@kit.BackgroundTasksKit'
 import { Callbacks } from './Callbacks'
-import { Auth, SenableAuth } from './Auth'
+import { Auth} from './Auth'
 import { http } from '@kit.NetworkKit'
 import preferences from '@ohos.data.preferences'
 
@@ -41,12 +39,12 @@ export class TaskWorker {
   static readonly keyETag:string = "eTag"
   static readonly bufferSize:number = 2 << 12;
   static readonly taskTimeoutMillis:number = 9 * 60 * 1000; // 9 minutes
-//
+
+  static workerShareableData? :WorkerShareableData;
+  //
   public static taskToJsonString(task: Task): string {
     console.error(BDPlugin.TAG+"enter taskToJsonString");
-    let sendableTask = new SendableTask(task);
-    console.error(BDPlugin.TAG+"leave taskToJsonString");
-    return JSON.stringify(sendableTask);
+    return JSON.stringify(task);
   }
 //
   public static async postOnBackgroundChannel(
@@ -76,7 +74,7 @@ export class TaskWorker {
             BDPlugin.keyProgressUpdateMap,
             task.taskId,
             JSON.stringify(new TaskProgressUpdate(
-              new SendableTask(task),
+              task,
               progress,
               expectedFileSize
             )),
@@ -104,9 +102,9 @@ export class TaskWorker {
    * Also stores a copy in memory locally, to allow notifications to resume a task
    */
   public async processResumeData(resumeData: ResumeData, prefs: dataPreferences.Preferences) {
-    BDPlugin.localResumeData.set(resumeData.task.taskId,resumeData)
+    TaskWorker.workerShareableData!.localResumeData.set(resumeData.task.taskId,resumeData)
     TaskWorker.postOnBackgroundChannel(
-      "resumeData", Task.fromSendableTask(resumeData.task), [
+      "resumeData", resumeData.task, [
       resumeData.data,
       resumeData.requiredStartByte,
       resumeData.eTag
@@ -186,24 +184,14 @@ export class TaskWorker {
     taskId: string,
     item: string,
     prefs: dataPreferences.Preferences
-  ): void {
+  ): void {    //ohos share
     BDPlugin.prefsLock.lockAsync(() => {
       let jsonString = prefs.getSync(prefsKey, "{}") as string
-      const mapByTaskId = JSON.parse(jsonString) as collections.Map<string, string>;
+      const mapByTaskId = JSON.parse(jsonString) as Map<string, string>;
       mapByTaskId.set(taskId,item);
       prefs.putSync(prefsKey, JSON.stringify(mapByTaskId));
       prefs.flushSync();
     })
-  }
-
-  private static deserializeTaskOptions(sendableOptions: SendableTaskOptions): TaskOptions | undefined {
-    console.error("enter it");
-    if (!sendableOptions) {
-      return undefined
-    }
-
-    let options = TaskOptions.fromSendableTaskOptions(sendableOptions);
-    return options;
   }
 
   private static filterHeaders(headers?: Map<string, string> | collections.Map<string, string>): Map<string, string> | undefined {
@@ -231,7 +219,7 @@ export class TaskWorker {
 
     return undefined;
   }
-//
+//   main thread
   public static async processStatusUpdate(
     task: Task,
     status: TaskStatus,
@@ -246,25 +234,25 @@ export class TaskWorker {
   ) {
     console.error("enter it");
     const resolvedContext: common.UIAbilityContext | undefined = context ?? BDPlugin.uiContext
-    if (BDPlugin.tasksToReEnqueue.delete(task)) {
+    if (TaskWorker.workerShareableData!.tasksToReEnqueue.delete(task)) {
       if (status == TaskStatus.paused || status == TaskStatus.canceled || status == TaskStatus.failed) {
         if (resolvedContext !== undefined) {
           WiFi.reEnqueue(
             new EnqueueItem(
               resolvedContext,
               task,
-              BDPlugin.notificationConfigJsonStrings.get(task.taskId),
-              BDPlugin.localResumeData.get(task.taskId)
+              TaskWorker.workerShareableData!.notificationConfigJsonStrings.get(task.taskId),
+              TaskWorker.workerShareableData!.localResumeData.get(task.taskId)
             )
           )
         }
-        if (BDPlugin.tasksToReEnqueue.size == 0) {
+        if (TaskWorker.workerShareableData!.tasksToReEnqueue.size == 0) {
           WiFi.reEnqueue(undefined) // signal end of batch
         }
         return
       }
 
-      if (BDPlugin.tasksToReEnqueue.size == 0) {
+      if (TaskWorker.workerShareableData!.tasksToReEnqueue.size == 0) {
         WiFi.reEnqueue(undefined) // signal end of batch
       }
 
@@ -277,7 +265,7 @@ export class TaskWorker {
     // Check if the task was 'programmatically' canceled, in which case a TaskStatus.failed may be
     // incorrectly generated by the WorkManager, so we change it to 'canceled'
     let modifiedStatus: TaskStatus =
-      BDPlugin.canceledTaskIds.has(task.taskId) ? TaskStatus.canceled : status
+      TaskWorker.workerShareableData!.canceledTaskIds.has(task.taskId) ? TaskStatus.canceled : status
     let retryNeeded = modifiedStatus as number == TaskStatus.failed && task.retriesRemaining > 0
     let canSendStatusUpdate = true
 
@@ -293,7 +281,7 @@ export class TaskWorker {
       case TaskStatus.canceled:
         canSendStatusUpdate = TaskWorker.canSendCancellation(task)
         if (canSendStatusUpdate) {
-          BDPlugin.cancelUpdateSentForTaskId.set(task.taskId, systemDateTime.getTime(false));
+          TaskWorker.workerShareableData!.cancelUpdateSentForTaskId.set(task.taskId, systemDateTime.getTime(false));
           TaskWorker.processProgressUpdate(task, -2.0, prefs)
         }
         break;
@@ -381,10 +369,10 @@ export class TaskWorker {
         let tasksMap = getTaskMap(prefs)
         console.error("getTaskMap success");
         tasksMap.delete(task.taskId)
-        let serializedTasks: collections.Map<string,SendableTask> = new collections.Map<string,SendableTask>()
+        let serializedTasks: Map<string,Task> = new Map<string,Task>()
 
         tasksMap.forEach((value, key) => {
-          serializedTasks.set(key,new SendableTask(value));
+          serializedTasks.set(key,value);
         });
 
         console.error("serializedTasks.set success");
@@ -420,13 +408,13 @@ export class TaskWorker {
     boolean {
     let now = systemDateTime.getTime(false);
     const filteredEntries: Array<[string, number]> = []
-    BDPlugin.cancelUpdateSentForTaskId.forEach((ts: number, key: string) => {
+    TaskWorker.workerShareableData!.cancelUpdateSentForTaskId.forEach((ts: number, key: string) => {
       if (now - ts < 3000) {
         filteredEntries.push([key, ts])
       }
     })
-    BDPlugin.cancelUpdateSentForTaskId = new Map(filteredEntries)
-    return BDPlugin.cancelUpdateSentForTaskId.get(task.taskId) == undefined;
+    TaskWorker.workerShareableData!.cancelUpdateSentForTaskId = new collections.Map(filteredEntries)
+    return TaskWorker.workerShareableData!.cancelUpdateSentForTaskId.get(task.taskId) == undefined;
   }
 
   /**
@@ -445,7 +433,7 @@ export class TaskWorker {
     let httpOptions: http.HttpRequestOptions = {};
     try {
       const prefOptions: preferences.Options = { name: "DEFAULT" };
-      this.prefs = preferences.getPreferencesSync(BDPlugin.uiContext,prefOptions);
+      this.prefs = preferences.getPreferencesSync(this.applicationContext,prefOptions);
       let requestTimeoutSeconds = this.prefs.getSync(BDPlugin.keyConfigRequestTimeout, 60) as number;
       let proxyAddress:string = this.prefs.getSync(BDPlugin.keyConfigProxyAddress,"undefined") as string;
       let proxyPort = this.prefs.getSync(BDPlugin.keyConfigProxyPort, 0) as number;
@@ -455,15 +443,15 @@ export class TaskWorker {
         port: proxyPort,
         exclusionList:[]
       }
-      if (!BDPlugin.haveLoggedProxyMessage) {
+      if (!TaskWorker.workerShareableData!.haveLoggedProxyMessage) {
         if(useProxy) {
           console.info("Using proxy:" + proxyAddress + ":"+proxyPort+"for all tasks");
         } else {
           console.info(BDPlugin.TAG+"Not using proxy for any task")
         }
-        BDPlugin.haveLoggedProxyMessage = true
+        TaskWorker.workerShareableData!.haveLoggedProxyMessage = true //共享
       }
-      this.task.httpRequestMethod
+
 
       httpOptions = {
         method: this.task.httpRequestMethod as http.RequestMethod,
@@ -497,7 +485,7 @@ export class TaskWorker {
    *
    * Returns the {@link TaskStatus}.
    */
-  public async connectAndProcess(httpOptions: http.HttpRequestOptions,header:Record<string,string>): Promise<TaskStatus> {
+  protected async connectAndProcess(httpOptions: http.HttpRequestOptions,header:Record<string,string>): Promise<TaskStatus> {
     if (!this.task) {
       console.error(TaskWorker.TAG, 'connectAndProcessHttpRequest called without a task');
       return TaskStatus.failed;
@@ -511,7 +499,7 @@ export class TaskWorker {
         let result = encoder.encodeInto(this.task.post);
 
 
-       httpOptions.extraData = this.task.post;
+       httpOptions.extraData = result;
        httpOptions.method = http.RequestMethod.POST;
 
 
@@ -524,7 +512,7 @@ export class TaskWorker {
       //   case FileSystemException:
       // }
     } finally {
-      BDPlugin.remainingBytesToDownload.delete(this.task.taskId);
+      TaskWorker.workerShareableData!.remainingBytesToDownload.delete(this.task.taskId); //share
     }
 
     return TaskStatus.failed;
@@ -627,9 +615,9 @@ export class TaskWorker {
   static taskException ?: TaskException
   static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
 
-  public workerParams?:Map<string, string | number|boolean | ResumeData | undefined>
+  public workerParams?:collections.Map<string, string | number|boolean | ResumeData | undefined>
 //
-  constructor(applicationContext ?: common.UIAbilityContext,workerParams?:Map<string, string | number | boolean | ResumeData | undefined>) {
+  constructor(applicationContext ?: common.UIAbilityContext,workerParams?:collections.Map<string, string | number | boolean | ResumeData | undefined>) {
     //constructor(applicationContext?:common.UIAbilityContext,workerParams?:Map<string,ESObject>) {
     this.applicationContext = applicationContext
     this.workerParams = workerParams
@@ -641,13 +629,13 @@ export class TaskWorker {
 /** Return the map of tasks stored in preferences */
 export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task> {
   const tasksMapJson = (prefs.getSync(BDPlugin.keyTasksMap, "{}") as string) ?? "{}"
-  const parsed = JSON.parse(tasksMapJson) as collections.Map<string,SendableTask>;
+  const parsed = JSON.parse(tasksMapJson) as Map<string,Task>;
   const result = new Map<string, Task>()
 
   parsed.forEach((value, key) => {
     const taskId = key;
     const taskData = value;
-    result.set(taskId, Task.fromSendableTask(taskData))
+    result.set(taskId, taskData)
   });
   //const entries = Object.entries(parsed)
 

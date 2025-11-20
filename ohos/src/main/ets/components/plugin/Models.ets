@@ -4,6 +4,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { suggestFilename } from './Helper';
 
+@Sendable
 export class TaskOptions {
   public beforeTaskStartRawHandle?: number
   public onTaskStartRawHandle?: number
@@ -31,18 +32,19 @@ export class TaskOptions {
   }
 }
 
+
 export interface Task_interface {
   taskId?: string;
   url?: string;
-  urls?: Array<string>;
+  urls?: collections.Array<string>;
   filename?: string;
-  headers?: Map<string,string>;
+  headers?: collections.Map<string,string>;
   httpRequestMethod?: string;
   chunks?: number;
   post?: string;
   fileField?: string;
   mimeType?: string;
-  fields?: Map<string,string>;
+  fields?: collections.Map<string,string>;
   directory?: string;
   baseDirectory?: string;
   group?: string;
@@ -67,22 +69,23 @@ export enum BaseDirectory {
   root
 }
 
+@Sendable
 export class Task {
   taskId: string;
   url: string;
   filename: string;
-  headers: Map<string,string>;
+  headers: collections.Map<string,string>;
   baseDirectory: string;
   group: string;
   updates: number;
   taskType: string;
-  urls: string[];
+  urls: collections.Array<string>;
   httpRequestMethod: string;
   chunks: number;
   post?: string;
   fileField: string;
   mimeType: string;
-  fields: Map<string,string>;
+  fields: collections.Map<string,string>;
   directory: string;
   requiresWiFi: boolean;
   retries: number;
@@ -98,18 +101,18 @@ export class Task {
     this.taskId = init?.taskId || Math.floor(Math.random() * 1000000).toString();
     this.url = init?.url || "";
     this.filename = init?.filename || "";
-    this.headers = init?.headers instanceof Map? init?.headers : new Map<string,string>();
+    this.headers = init?.headers instanceof collections.Map? init?.headers : new collections.Map<string,string>();
     this.baseDirectory = init?.baseDirectory || "";
     this.group = init?.group || "";
     this.updates = init?.updates??Updates.none;
     this.taskType = init?.taskType || "";
-    this.urls = init?.urls instanceof Array? init?.urls : new Array<string>();
+    this.urls = init?.urls instanceof collections.Array? init?.urls : new collections.Array<string>();
     this.httpRequestMethod = init?.httpRequestMethod || "GET";
     this.chunks = init?.chunks || 1;
     this.post = init?.post;
     this.fileField = init?.fileField || "";
     this.mimeType = init?.mimeType || "";
-    this.fields = init?.fields instanceof Map?init?.fields : new Map<string,string>();
+    this.fields = init?.fields instanceof collections.Map?init?.fields : new collections.Map<string,string>();
     this.directory = init?.directory || "";
     this.requiresWiFi = init?.requiresWiFi || false;
     this.retries = init?.retries || 0;
@@ -305,6 +308,7 @@ export interface ResumeDataInterface {
   eTag?: string;
 }
 
+@Sendable
 export class ResumeData {
   task: Task;
   data: string;

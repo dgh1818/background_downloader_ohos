@@ -4,7 +4,6 @@ import {
   ExceptionType,
   ResumeData,
   ResumeDataInterface,
-  SendableTask,
   TaskException,
   TaskStatus,
   Task
@@ -13,14 +12,14 @@ import { TaskWorker, TaskWorkerKey } from './TaskWorker'
 import { http } from '@kit.NetworkKit';
 import { baseDirPath, FileUtils, getContentLength, insufficientSpace, parseRange, suggestFilename } from './Helper';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import BDPlugin, { SendableObject } from './BDPlugin';
+import BDPlugin, { WorkerShareableData } from './BDPlugin';
 import { collections, ErrorEvent, MessageEvents, ThreadWorkerGlobalScope, uri, util, worker } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { NotificationConfig } from './Notifications';
 
 class DownloadTaskWorker extends TaskWorker {
   constructor(applicationContext: common.UIAbilityContext,
-    workerParams: Map<string, string | number | boolean | ResumeData | undefined>) {
+    workerParams: collections.Map<string, string | number | boolean | ResumeData | undefined>) {
     super(applicationContext, workerParams);
   }
 
@@ -85,11 +84,11 @@ class DownloadTaskWorker extends TaskWorker {
    */
 
   private async prepResumeAfterFailure() {
-    let sendableTask = new SendableTask(this.task!)
+
 
     if (this.serverAcceptsRanges && this.bytesTotal + this.startByte > (1 << 20)) {
       let init: ResumeDataInterface = {
-        task: sendableTask,
+        task: this.task!,
         data: this.tempFilePath,
         requiredStartByte: this.bytesTotal + this.startByte,
         eTag: this.eTagHeader,
@@ -281,10 +280,10 @@ class DownloadTaskWorker extends TaskWorker {
           this.deleteTempFile()
           return TaskStatus.canceled
         case TaskStatus.paused as number:
-          BDPlugin.pausedTaskIds.delete(this.task.taskId);
+          TaskWorker.workerShareableData!.pausedTaskIds.delete(this.task.taskId);  //share
           if (this.taskCanResume) {
             this.processResumeData(new ResumeData({
-              task: new SendableTask(this.task),
+              task: this.task,
               data: this.tempFilePath,
               requiredStartByte: this.bytesTotal + this.startByte,
               eTag: this.eTagHeader
@@ -292,13 +291,13 @@ class DownloadTaskWorker extends TaskWorker {
             return TaskStatus.paused
           }
 
-          if (BDPlugin.tasksToReEnqueue.has(this.task!) && this.serverAcceptsRanges) {
+          if (TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task!) && this.serverAcceptsRanges) {
 
           }
 
-          if (BDPlugin.tasksToReEnqueue.has(this.task) && this.serverAcceptsRanges) {
-            BDPlugin.localResumeData.set(this.task.taskId, new ResumeData({
-              task: new SendableTask(this.task),
+          if (TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task) && this.serverAcceptsRanges) {
+            TaskWorker.workerShareableData!.localResumeData.set(this.task.taskId, new ResumeData({
+              task: this.task,
               data: this.tempFilePath,
               requiredStartByte: this.bytesTotal + this.startByte,
               eTag: this.eTagHeader
@@ -320,7 +319,7 @@ class DownloadTaskWorker extends TaskWorker {
               this.task,
               this.notificationConfigJsonString,
               new ResumeData({
-                task: new SendableTask(this.task),
+                task: this.task,
                 data: this.tempFilePath,
                 requiredStartByte: start,
                 eTag: this.eTag
@@ -353,14 +352,19 @@ type WorkerParamValue = string | number | boolean | sendableContextManager.Senda
 
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");
-  const data = event.data as SendableObject;
-  if (data == undefined) {
+
+  let command = event.data["startWork"] as string;
+  let sendableUIContext = event.data["sendableContext"] as sendableContextManager.SendableContext;
+  let taskWorkerData = event.data["taskWorkerData"] as collections.Map<string,number|string|boolean|undefined|ResumeData>
+  let workerShareableData = event.data["workerShareableData"] as WorkerShareableData;
+  if(!workerShareableData) {
     return;
   }
-  let command = data.command;
-  let sendableUIContext = data.sendableContext;
+  TaskWorker.workerShareableData = workerShareableData;
+
   let uiContext = sendableContextManager.convertToUIAbilityContext(sendableUIContext);
   if (!uiContext) {
     console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a valid UI context')
@@ -369,27 +373,27 @@ workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message:command is" + command);
   switch (command) {
     case "startWork": {
-      let SendableTaskWorkerData = data.taskWorkerData;
-      let TaskWorkerData = new Map<string, string | number | boolean | ResumeData | undefined>();
-      SendableTaskWorkerData.forEach((value, key) => {
-        TaskWorkerData.set(key, value);
-      });
+      // let TaskWorkerData = new collections.Map<string, string | number | boolean | ResumeData | undefined>();
+      // taskWorkerData.forEach((value, key) => {
+      //   TaskWorkerData.set(key, value);
+      // });
 
-      let worker = new DownloadTaskWorker(uiContext, TaskWorkerData)
-      let taskJson = TaskWorkerData.get(TaskWorkerKey.keyTask) as string | undefined
+      let worker = new DownloadTaskWorker(uiContext, taskWorkerData)
+      let taskJson = taskWorkerData.get(TaskWorkerKey.keyTask) as string | undefined
+      //worker.haveLoggedProxyMessage
       if (!taskJson) {
         console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a task payload')
         return
       }
-      worker.task = Task.fromSendableTask(JSON.parse(taskJson) as SendableTask)
+      worker.task = JSON.parse(taskJson) as Task;
       worker.notificationConfigJsonString =
-        TaskWorkerData.get(TaskWorkerKey.keyNotificationConfig) as string | undefined;
+        taskWorkerData.get(TaskWorkerKey.keyNotificationConfig) as string | undefined;
       worker.notificationConfig = worker.notificationConfigJsonString
         ? (JSON.parse(worker.notificationConfigJsonString) as NotificationConfig)
         : undefined
-      const resumeDataPath = TaskWorkerData.get(TaskWorkerKey.keyResumeDataData) as string | undefined
-      const requiredStartByte = TaskWorkerData.get(TaskWorkerKey.keyStartByte) as number | undefined
-      const resumeETag = TaskWorkerData.get(TaskWorkerKey.keyETag) as string | undefined
+      const resumeDataPath = taskWorkerData.get(TaskWorkerKey.keyResumeDataData) as string | undefined
+      const requiredStartByte = taskWorkerData.get(TaskWorkerKey.keyStartByte) as number | undefined
+      const resumeETag = taskWorkerData.get(TaskWorkerKey.keyETag) as string | undefined
 
       if (resumeDataPath !== undefined && requiredStartByte !== undefined) {
         worker.isResume = true

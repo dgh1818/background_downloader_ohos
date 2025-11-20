@@ -36,22 +36,21 @@ import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 import BDPlugin from "./BDPlugin";
 
 
-@Concurrent
 export async function methodEnqueueAll_task(
   taskListJsonString: string,
   notificationConfigListJsonString: string,
-  sendableUIContext:sendableContextManager.SendableContext,
-  pausedTaskIds:Set<string>,
-  cancelUpdateSentForTaskId:Map<string, number>,
 
-): Promise<Array<boolean>> {
+): Promise<Array<boolean>|undefined> {
 
   try {
     console.error(BDPlugin.TAG + "enter methodEnqueueAll_task");
-    const rawTasks = JSON.parse(taskListJsonString) as Map<string,Task>;
+    const rawTasks = JSON.parse(taskListJsonString) as Map<string,Task | undefined>;
     const rawNotificationConfigs =
       JSON.parse(notificationConfigListJsonString) as Array<NotificationConfig | undefined>;
-    let uiContext = sendableContextManager.convertToUIAbilityContext(sendableUIContext);
+    if(!BDPlugin.uiContext) {
+      return undefined;
+    }
+    let uiContext = BDPlugin.uiContext;
 
     //const results: boolean[] = [];
 
@@ -60,19 +59,13 @@ export async function methodEnqueueAll_task(
     rawTasks.forEach(async (value, key) => {
       const p = (async () => {
       const task = value;
+      if(task == undefined) {
+        return false;
+      }
       const notificationConfig = rawNotificationConfigs[index];
       index++;
       const notificationConfigJsonString = notificationConfig ? JSON.stringify(notificationConfig) : undefined;
-      let success = false;
       try {
-        try {
-          decodeURIComponent(task.url); // 解码
-        } catch (e) {
-
-          console.log(BDPlugin.TAG, 'Malformed or undecodable URL for taskId' + task.taskId);
-          //results.push(false);
-          return false;
-        }
 
         if (BDPlugin.holdingQueue == undefined) {
           // 直接入队
@@ -84,7 +77,19 @@ export async function methodEnqueueAll_task(
             0,
           )
         } else {
+          try {
+            let validateUrl = decodeURIComponent(task.url); // 解码
+            if(validateUrl == undefined) {
+              return false;
+            }
+          } catch (e) {
+
+            console.log(BDPlugin.TAG, 'Malformed or undecodable URL for taskId' + task.taskId);
+            //results.push(false);
+            return false;
+          }
           console.log(BDPlugin.TAG, 'Enqueueing task with id ' + task.taskId + ' to the HoldingQueue');
+
           await BDPlugin.holdingQueue.add(
             new EnqueueItem(
               uiContext,
