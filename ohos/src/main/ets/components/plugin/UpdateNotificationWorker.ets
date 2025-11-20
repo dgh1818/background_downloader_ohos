@@ -1,10 +1,11 @@
-import { common, sendableContextManager } from '@kit.AbilityKit'
+
+import { common, sendableContextManager } from '@kit.AbilityKit';
 import { collections, MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
-import { Task, TaskStatus } from './Models';
+import { SendableTask, Task, TaskStatus } from './Models';
 import { TaskWorker } from './TaskWorker';
 import { hash } from '@kit.CoreFileKit';
 import { notificationManager } from '@kit.NotificationKit';
-import { NotificationConfig, NotificationService, NotificationType } from './Notifications';
+import { NotificationConfig, NotificationService, UpdateNotificationWorkerMessage } from './Notifications';
 import BDPlugin from './BDPlugin';
 
 /**
@@ -20,19 +21,16 @@ import BDPlugin from './BDPlugin';
  * - taskStatus is null -> deletes the notification
  * - taskStatus is TaskStatus.failed -> displays error notification if needed
  */
-export class UpdateNotificationWorker extends TaskWorker {
+class UpdateNotificationWorker extends TaskWorker {
   // (applicationContext: common.UIAbilityContext, workerParams: WorkerParameters) :
   // TaskWorker(applicationContext, workerParams)
-  // private applicationContext?:common.UIAbilityContext
   // private workerParams?:Map<string,ESObject>
   static readonly keyTaskStatusOrdinal = "taskStatusOrdinal"
 
 
-  constructor(applicationContext: common.UIAbilityContext) {
+  constructor(applicationContext: common.UIAbilityContext,workerParams?:Map<string, string | number>) {
     //constructor(applicationContext: common.UIAbilityContext,workerParams: Map<string,ESObject>) {
-    super(applicationContext);
-
-    this.applicationContext = applicationContext;
+    super(applicationContext,workerParams);
 
   }
 
@@ -45,44 +43,46 @@ export class UpdateNotificationWorker extends TaskWorker {
 
 }
 
-const workerPort = worker.workerPort;
-
-let Worker_impl: UpdateNotificationWorker;
-let uiContext: common.UIAbilityContext
-
-
-workerPort.onmessage = (e: MessageEvents) => {
-  let inputData: collections.Map<string, string> = e.data;
-
-  console.info("sendable obj is: ");
-
-
-
-  switch (e.data.command) {
-    case 'do_work':
-      uiContext = e.data.uiContext;
-      Worker_impl = new UpdateNotificationWorker(uiContext)
-      Worker_impl.task = JSON.parse(e.data.get('keyTask')) as Task
-      Worker_impl.notificationConfigJsonString = e.data.get('keyNotificationConfig') as string
-      uiContext = sendableContextManager.convertToUIAbilityContext(e.data.get('uiContext') as sendableContextManager.SendableContext)
-      Worker_impl.notificationConfig = Worker_impl.notificationConfigJsonString != undefined ?
-      JSON.parse(Worker_impl.notificationConfigJsonString) : undefined
-      let taskStatusOrdinal: number = e.data.get('keyTaskStatusOrdinal') as number ?? -1;
-      hash.hash(Worker_impl.task.taskId, 'sha1').then((hash_result: string) => {
-        Worker_impl.notificationId = parseInt(hash_result);
-      })
-
-      if (taskStatusOrdinal == -1) {
-        // delete notification
-        notificationManager.cancel(Worker_impl.notificationId);
-      } else {
-        // update notification for this taskStatus
-        let taskStatus = taskStatusOrdinal as TaskStatus
-        Notifications.updateNotification(uiContext, taskStatus)
-      }
-
-
-  }
-
-
-}
+const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+workerPort.onmessage = (event: MessageEvents) => {
+  // const message = event.data as UpdateNotificationWorkerMessage;
+  // if (message.command !== 'update') {
+  //   return;
+  // }
+  //
+  // const sendableCtx = message.uiContext;
+  // const uiContext =
+  //   sendableCtx !== undefined
+  //     ? sendableContextManager.convertToUIAbilityContext(sendableCtx)
+  //     : undefined;
+  // if (uiContext === undefined) {
+  //   console.error(BDPlugin.TAG, 'UpdateNotificationWorker requires a UIAbilityContext to run');
+  //   return;
+  // }
+  //
+  // const workerInstance = new UpdateNotificationWorker(uiContext);
+  // const parsedTask = JSON.parse(message.taskJson) as SendableTask;
+  // workerInstance.task = Task.fromSendableTask(parsedTask);
+  // workerInstance.notificationConfigJsonString = message.notificationConfigJson;
+  // workerInstance.notificationConfig = message.notificationConfigJson !== undefined
+  //   ? (JSON.parse(message.notificationConfigJson) as NotificationConfig)
+  //   : undefined;
+  //
+  // //const task = workerInstance;
+  // if (parsedTask === undefined) {
+  //   console.error(BDPlugin.TAG, 'UpdateNotificationWorker received an invalid task payload');
+  //   return;
+  // }
+  //
+  // hash.hash(parsedTask.taskId, 'sha1').then((hashResult: string) => {
+  //   workerInstance.notificationId = parseInt(hashResult, 16);
+  //   if (message.taskStatusOrdinal === undefined) {
+  //     notificationManager.cancel(workerInstance.notificationId);
+  //     return;
+  //   }
+  //   const taskStatus = message.taskStatusOrdinal as TaskStatus;
+  //   NotificationService.updateNotification(workerInstance, taskStatus);
+  // }).catch((error: Error) => {
+  //   console.error(BDPlugin.TAG, 'Failed to update notification for task', error);
+  // });
+};

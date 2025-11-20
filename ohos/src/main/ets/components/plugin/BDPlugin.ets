@@ -28,7 +28,9 @@ import {
 } from "@kit.AbilityKit";
 import { hash } from '@kit.CoreFileKit';
 import { BusinessError } from '@ohos.base';
-import { ArkTSUtils, ArrayList, collections, List, MessageEvents, taskpool, uri, url, worker } from "@kit.ArkTS";
+import { ArkTSUtils, ArrayList, collections,
+  ErrorEvent,
+  List, MessageEvents, taskpool, uri, url, worker } from "@kit.ArkTS";
 import { fileUri } from '@kit.CoreFileKit';
 import dataPreferences from '@ohos.data.preferences'
 import { photoAccessHelper } from "@kit.MediaLibraryKit";
@@ -36,36 +38,10 @@ import { dataSharePredicates, preferences } from "@kit.ArkData";
 import { workScheduler } from "@kit.BackgroundTasksKit";
 
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
-import { NotificationConfig } from './Notifications'
-import { ISendable, ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
+import { NotificationConfig, NotificationService } from './Notifications'
+import { ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
 import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 import { methodEnqueueAll_task } from "./methodEnqueueAll_task";
-
-@Sendable
-export class SendableObject {
-  //constructor(sendableContext: sendableContextManager.SendableContext, contextName: string) {
-  constructor(command: string, sendableContext: sendableContextManager.SendableContext, immediate?: boolean,
-    requireWifi?: boolean, requireCharging?: boolean, triggerUpdateDelay?: number, triggerMaxDelay?: number) {
-
-    this.command = command;
-    this.sendableContext = sendableContext;
-    this.immediate = immediate;
-    this.requireWifi = requireWifi;
-    this.requireCharging = requireCharging;
-    this.triggerUpdateDelay = triggerUpdateDelay;
-    this.triggerMaxDelay = triggerMaxDelay;
-
-  }
-
-  //args: Map<string, ESObject>;
-  command: string = "";
-  sendableContext: sendableContextManager.SendableContext;
-  immediate?: boolean = false;
-  requireWifi?: boolean = false;
-  requireCharging?: boolean = false;
-  triggerUpdateDelay?: number = 5000;
-  triggerMaxDelay?: number = 50000;
-}
 
 export default class BDPlugin implements FlutterPlugin, MethodCallHandler, AbilityAware {
   public static readonly TAG = "BackgroundDownloader"
@@ -95,14 +71,15 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static bgChannelByTaskId = new Map<string, MethodChannel>()
   public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
   public static requireWifi = RequireWiFi.asSetByTask
+
   // global setting
   public static localResumeData = new Map<string, ResumeData>()
   // by taskId, for pause notifications
   public static cancelUpdateSentForTaskId = new Map<string, number>()
   // <taskId, timeMillis>
-  public static pausedTaskIds = new Set<String>()
+  public static pausedTaskIds = new Set<string>()
   // <taskId>, acts as flag
-  public static canceledTaskIds = new Set<String>()
+  public static canceledTaskIds = new Set<string>()
   // <taskId>, acts as flag
   //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
   public static tasksToReEnqueue = new Set<Task>()
@@ -117,6 +94,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   // <taskId, size>
   public static haveLoggedProxyMessage = false
   public static holdingQueue?: HoldingQueue
+  public static latestPluginInstance?: BDPlugin;
 
   static async doEnqueue(
     context: common.UIAbilityContext,
@@ -124,147 +102,174 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     notificationConfigJsonString?: string,
     resumeData?: ResumeData,
     initialDelayMillis: number = 0,
-    plugin?: BDPlugin
+    //plugin?: BDPlugin
   ): Promise<boolean> {
 
-    console.log(BDPlugin.TAG + 'Enqueuing task with id' + task.taskId);
-    let bgChannel = BDPlugin.methodbackgroundChannel(plugin)
-    if (bgChannel != undefined) {
-      BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
-    } else {
-      console.warn(BDPlugin.TAG, "Could not find backgroundChannel for taskId" + task.taskId);
+    if (BDPlugin.holdingQueue) {
+      BDPlugin.holdingQueue.hostByTaskId.set(task.taskId, task.host() ?? "");
     }
-    BDPlugin.holdingQueue?.hostByTaskId?.set(
-      task.taskId,
-      task.host()
-    ) // store host if we have a HoldingQueue
     BDPlugin.canceledTaskIds.delete(task.taskId);
-    BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId) // reset flag
-    let dataBuilder = new collections.Map<string, string | number>();
 
+    BDPlugin.cancelUpdateSentForTaskId.delete(task.taskId);
+    console.error(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}8`);
 
-    if (notificationConfigJsonString != undefined) {
+    const parameters: Record<string, string | number | boolean> = {};
+    parameters[TaskWorkerKey.keyTask] = TaskWorker.taskToJsonString(task) as string;
+    console.error(BDPlugin.TAG, `before if (notificationConfigJsonString !== undefined) {`);
+    if (notificationConfigJsonString !== undefined) {
+      parameters[TaskWorkerKey.keyNotificationConfig] = notificationConfigJsonString;
       BDPlugin.notificationConfigJsonStrings.set(task.taskId, notificationConfigJsonString);
     }
-    let data = ArkTSUtils.ASON.stringify(dataBuilder) //To Do
-
-    let taskRequiresWifi = BDPlugin.taskRequiresWifi(task)
-    if (taskRequiresWifi) {
-      BDPlugin.taskIdsRequiringWiFi.add(task.taskId)
+    if (resumeData !== undefined) {
+      parameters[TaskWorkerKey.keyResumeDataData] = resumeData.data;
+      parameters[TaskWorkerKey.keyStartByte] = resumeData.requiredStartByte;
+      if (resumeData.eTag !== undefined) {
+        parameters[TaskWorkerKey.keyETag] = resumeData.eTag;
+      }
     }
 
-    // val constraints = Constraints.Builder().setRequiredNetworkType(
-    // if (taskRequiresWifi) NetworkType.UNMETERED else NetworkType.CONNECTED
-    // ).build()
-    let network_condition: workScheduler.NetworkType;
+    const taskRequiresWifi = BDPlugin.taskRequiresWifi(task);
     if (taskRequiresWifi) {
-      network_condition = workScheduler.NetworkType.NETWORK_TYPE_WIFI
-    } else {
-      network_condition = workScheduler.NetworkType.NETWORK_TYPE_ANY
+      BDPlugin.taskIdsRequiringWiFi.add(task.taskId);
     }
 
-    let WorkerName: string;
+    const networkCondition = taskRequiresWifi
+      ? workScheduler.NetworkType.NETWORK_TYPE_WIFI
+      : workScheduler.NetworkType.NETWORK_TYPE_ANY;
 
+    let workerName: string;
+    console.error("before switch (task.taskType)"+task.taskType);
     switch (task.taskType) {
       case "ParallelDownloadTask":
-        WorkerName = 'ParallelDownloadTaskWorker'
+        workerName = "ParallelDownloadTaskWorker";
         break;
       case "DownloadTask":
-        WorkerName = 'DownloadTaskWorker'
-        break;
       case "UriDownloadTask":
-        WorkerName = 'DownloadTaskWorker'
+        workerName = "DownloadTaskWorker";
         break;
       case "UploadTask":
-        WorkerName = 'UploadTaskWorker'
-        break;
       case "UriUploadTask":
-        WorkerName = 'UploadTaskWorker'
+        workerName = "UploadTaskWorker";
         break;
       case "MultiUploadTask":
-        WorkerName = 'UploadTaskWorkerr'
+        workerName = "UploadTaskWorker";
         break;
       case "DataTask":
-        WorkerName = 'DataTaskWorker'
+        workerName = "DataTaskWorker";
         break;
       default:
-        console.error(BDPlugin.TAG, 'Unknown taskType' + task.taskType);
-        WorkerName = '';
+        console.error(BDPlugin.TAG, `Unknown taskType ${task.taskType}`);
         return false;
     }
 
-    let requestBuilder: workScheduler.WorkInfo = {
-      workId: parseInt(task.taskId),
-      bundleName: 'background_downloader',
-      abilityName: WorkerName,
-      networkType: network_condition,
-      parameters: {
-        [TaskWorkerKey.keyTask]: ArkTSUtils.ASON.stringify(task),
-        [TaskWorkerKey.keyNotificationConfig]: notificationConfigJsonString ?? '',
-        [TaskWorkerKey.keyResumeDataData]: resumeData ? resumeData.data : '',
-        [TaskWorkerKey.keyStartByte]: resumeData ? resumeData.requiredStartByte : -1,
-        [TaskWorkerKey.keyETag]: resumeData ? resumeData.eTag ?? '' : '',
-      }
+    // const request: workScheduler.WorkInfo = {
+    //   workId: parseInt(task.taskId),
+    //   bundleName: "background_downloader",
+    //   abilityName: workerName,
+    //   networkType: networkCondition,
+    //   parameters:parameters,
+    // };
+
+
+    const downloadTaskWorker: worker.ThreadWorker = new worker.ThreadWorker('../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets');
+
+    downloadTaskWorker.onerror = (err: ErrorEvent) => {
+      console.info("Worker出错了：" + err.message);
     }
 
-    // if (initialDelayMillis != 0) {
-    //   requestBuilder.setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
-    // }
-    // if (task.priority < 5 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-    //   requestBuilder.setExpedited(policy = OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-    // }
 
-    workScheduler.startWork(requestBuilder);
+      if(context == undefined) {
+        console.error("BDPlugin.sendableUIContext is false")
+      return false;
+    }
+    //let requireWifi = BDPlugin.requireWifi.valueOf() == 1 ? true:false;
+    let requireWifi = false;
+
+    let taskWorkerData = new Map<string,number|string|boolean|undefined|ResumeData>();
+
+    taskWorkerData.set(TaskWorkerKey.keyTask, TaskWorker.taskToJsonString(task));
+    taskWorkerData.set(TaskWorkerKey.keyNotificationConfig,notificationConfigJsonString);
+    taskWorkerData.set(TaskWorkerKey.keyResumeDataData,resumeData?.data);
+    taskWorkerData.set(TaskWorkerKey.keyStartByte,resumeData?.requiredStartByte);
+    taskWorkerData.set(TaskWorkerKey.keyETag,resumeData?.eTag);
+
+    let sendableContext = sendableContextManager.convertFromContext(context);
+    //let sendableObject:SendableObject = new SendableObject("startWork",sendableContext,taskWorkerData)
+
+
+
+
+
+    downloadTaskWorker.postMessage({ buffers: BDPlugin.keyTasksMap,
+                                      command:"startWork"}, [])
+
+    //downloadTaskWorker.postMessageWithSharedSendable(sendableObject);
+    //.startWork(request);
 
     try {
-      // withContext(Dispatchers.IO) {
-      //   operation.result.get()
-      // }
-
-      let options: preferences.Options = { name: 'DEFAULT' };
-      let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options)
-      // if (initialDelayMillis != 0) {
-      //   delay(min(100L, initialDelayMillis))
-      // }
-
-      if (BDPlugin.holdingQueue?.enqueuedTaskIds?.includes(task.taskId) != true) {
-        TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, prefs, BDPlugin.uiContext,undefined, undefined, undefined, undefined,
-          undefined, undefined)
-
+      const options: preferences.Options = { name: "DEFAULT" };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+      if (BDPlugin.holdingQueue?.enqueuedTaskIds?.includes(task.taskId) !== true) {
+        await TaskWorker.processStatusUpdate(
+          task,
+          TaskStatus.enqueued,
+          prefs,
+          BDPlugin.uiContext,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined
+        );
       }
-    } catch (e) {
-      console.error(BDPlugin.TAG, 'Unable to start background request for taskId' + task.taskId + 'in operation:');
-      return false
+    } catch (error) {
+      console.error(BDPlugin.TAG, `Unable to start background request for taskId ${task.taskId}`, error);
+      return false;
     }
 
+    NotificationService.registerEnqueue(
+      new EnqueueItem(context, task, notificationConfigJsonString, resumeData),
+      true
+    );
+
     BDPlugin.prefsLock.lockAsync(() => {
-      let options: preferences.Options = { name: 'DEFAULT' };
-      let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options)
-
-      let tasksMap = getTaskMap(prefs)
+      const options: preferences.Options = { name: "DEFAULT" };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+      const tasksMap = getTaskMap(prefs);
       tasksMap.set(task.taskId, task);
-      prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(tasksMap));
+      const serializedTasks: Record<string, Object> = {};
+      const iterator = tasksMap.entries();
+      let entry = iterator.next();
+      while (!entry.done) {
+        const pair = entry.value;
+        const storedTaskId = pair[0];
+        const storedTask = pair[1];
+        serializedTasks[storedTaskId] = storedTask;
+        entry = iterator.next();
+      }
+      prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
       prefs.flushSync();
-
     });
 
     return true;
   }
 
   public static uiContext?: common.UIAbilityContext;
-  private sendableCtx?: sendableContextManager.SendableContext = undefined;
+  public static sendableUIContext? : sendableContextManager.SendableContext;
   private prefs?: dataPreferences.Preferences;
   private channel?: MethodChannel
   private backgroundChannel?: MethodChannel
-  private applicationContext?: common.ApplicationContext;
+  //private applicationContext?: common.ApplicationContext;
   // scope?: CoroutineScope
   private binaryMessenger?: BinaryMessenger
   private activity?: Ability;
 
   onAttachedToEngine(binding: FlutterPluginBinding): void {
+    console.error("attach to engine");
     //context = ctx //move to onAttachedToAbility
 
-    this.applicationContext = binding.getApplicationContext().getApplicationContext();
+
     this.binaryMessenger = binding.getBinaryMessenger()
     this.backgroundChannel =
       new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader.background");
@@ -277,20 +282,19 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       binding.getBinaryMessenger(),
       "com.bbflight.background_downloader.uriutils"
     )
-    let options: preferences.Options = { name: 'DEFAULT' };
-    let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
-    let allWorkInfos: workScheduler.WorkInfo[];
 
-    workScheduler.obtainAllWorks().then((allWorkInfos: workScheduler.WorkInfo[]) => {
-      if (allWorkInfos.length == 0) {
-        BDPlugin.prefsLock.lockAsync(() => {
-          prefs.deleteSync(BDPlugin.keyTasksMap);
-          prefs.flushSync();
-        })
-      }
-    });
+    // let allWorkInfos: workScheduler.WorkInfo[];
+    //
+    // workScheduler.obtainAllWorks().then((allWorkInfos: workScheduler.WorkInfo[]) => {
+    //   if (allWorkInfos.length == 0) {
+    //     BDPlugin.prefsLock.lockAsync(() => {
+    //       prefs.deleteSync(BDPlugin.keyTasksMap);
+    //       prefs.flushSync();
+    //     })
+    //   }
+    // });
+    //
 
-    BDPlugin.requireWifi = prefs.getSync('keyRequireWiFi', 0) as RequireWiFi;
   }
 
   onDetachedFromEngine(binding: FlutterPluginBinding): void {
@@ -314,12 +318,16 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
     console.error('BDPLUGIN' + call.method);
     switch (call.method) {
+      case 'configForegroundFileSize':
+        this.methodConfigForegroundFileSize(call, result);
+        break;
       case 'configHoldingQueue':
         this.methodConfigHoldingQueue(call, result);
         break;
       case 'enqueueAll':
         this.methodEnqueueAll(call, result);
         break;
+
 
 
       default:
@@ -334,13 +342,54 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   }
 
   onAttachedToAbility(binding: AbilityPluginBinding) {
+    console.error("enter onAttachedToAbility");
     //handleIntent(binding.activity.intent)
     BDPlugin.uiContext = binding.getAbility().context;
+    BDPlugin.sendableUIContext = sendableContextManager.convertFromContext(BDPlugin.uiContext!);
+    console.error("successful onAttachedToAbility");
+
+    let options: preferences.Options = { name: 'DEFAULT' };
+    let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+    BDPlugin.requireWifi = prefs.getSync('keyRequireWiFi', 0) as RequireWiFi;
+    console.error("attach to engine successfully");
+
   }
 
   onDetachedFromAbility() {
 
   }
+
+  private methodConfigForegroundFileSize(call: MethodCall, result: MethodResult) {
+     let fileSize = call.args as number;
+     this.updateSharedPreferences(BDPlugin.keyConfigForegroundFileSize,fileSize);
+     if(fileSize==0) {
+       console.error("Enabled foreground mode for all tasks");
+     } else if (fileSize == -1) {
+       console.error("Disabled foreground mode for all tasks");
+     } else {
+       console.error("Set foreground file size threshold to" + fileSize + "MB");
+     }
+
+     result.success({});
+  }
+
+/**
+ * Helper function to update or delete the [value] in shared preferences under [key]
+ *
+ * If [value] is null, the [key] is deleted
+ */
+private updateSharedPreferences(key: string, value?: number) {
+  let options: preferences.Options = { name: 'DEFAULT' };
+  let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+  if(value!=undefined) {
+    prefs.putSync(key,value)
+  } else {
+    prefs.deleteSync(key);
+  }
+
+  prefs.flushSync();
+  console.info(BDPlugin.TAG, "Setting preference key" + key + ":" + value)
+}
 
   /**
    * Configure the holding queue
@@ -364,10 +413,12 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     plugin: BDPlugin | undefined = undefined,
     taskId: string = "bgd_non_existent_id"
   ): MethodChannel | undefined {
-    return plugin?.backgroundChannel;
+    return plugin?.backgroundChannel
+      ?? BDPlugin.bgChannelByTaskId.get(taskId)
+      ?? BDPlugin.firstBackgroundChannel;
   }
 
-  static taskRequiresWifi(task: Task): Boolean {
+  static taskRequiresWifi(task: Task): boolean {
     return (BDPlugin.requireWifi == RequireWiFi.forAllTasks ||
       (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
   }
@@ -482,17 +533,69 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
 
   private methodEnqueueAll(call: MethodCall, result: MethodResult) {
-    let args = call.args as List<string>;
+    let args: Array<ESObject> = call.args as Array<ESObject>;
     let taskListJsonString = args[0] as string;
     let notificationConfigListJsonString = args[1] as string;
 
-    const task = new taskpool.Task(methodEnqueueAll_task, taskListJsonString,notificationConfigListJsonString,result);
-    taskpool.execute(task).then(() => {
-      console.info('execute methodEnqueueAll success');
-    }).catch((e: BusinessError) => {
-      console.error(`execute methodEnqueueAll error: ${e.message}`);
+    BDPlugin.latestPluginInstance = this;
+
+    if(!BDPlugin.sendableUIContext) {
+      console.error("sendableUIContext is error");
+      return
+    }
+    const rawTasks = JSON.parse(taskListJsonString) as Map<string,Task>;
+    rawTasks.forEach(async (value, key) => {
+      const task = value;
+      const bgChannel = BDPlugin.methodbackgroundChannel(this);
+      if (bgChannel !== undefined) {
+        BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
+      } else {
+        console.error(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
+      }
     })
+
+    const task = new taskpool.Task(
+      methodEnqueueAll_task,
+      taskListJsonString,
+      notificationConfigListJsonString,
+      BDPlugin.holdingQueue,
+      BDPlugin.sendableUIContext
+    );
+    taskpool.execute(task)
+      .then((results: object) => {
+        result.success(results as Array<boolean>);
+        console.info('execute methodEnqueueAll success');
+      })
+      .catch((e: BusinessError) => {
+        console.error(`execute methodEnqueueAll error: ${e.message}`);
+        result.success([]);
+      });
   }
+}
+
+export class WorkerObject {
+  constructor(
+    command: string,
+    uiContext: sendableContextManager.SendableContext,
+    taskWorkerData: Map<string, number | string | boolean | undefined | ResumeData>,
+    // requireWifi?: boolean | undefined,
+    // triggerUpdateDelay?: number | undefined,
+    // triggerMaxDelay?: number | undefined,
+  ) {
+    this.command = command;
+    this.sendableContext = uiContext;
+    this.taskWorkerData = taskWorkerData;
+    // this.requireWifi = requireWifi;
+    // this.triggerUpdateDelay = triggerUpdateDelay;
+    // this.triggerMaxDelay = triggerMaxDelay;
+  }
+
+  public command: string = "";
+  public sendableContext: sendableContextManager.SendableContext;
+  public taskWorkerData:Map<string, number | string | boolean | undefined | ResumeData>;
+  // public requireWifi?: boolean = false;
+  // public triggerUpdateDelay?: number = 5000;
+  // public triggerMaxDelay?: number = 50000;
 }
         //
         // class TaskScope {

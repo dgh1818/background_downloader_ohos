@@ -3,5 +3,12 @@
     name: "background_downloader",
     type: "har",
     deviceTypes: ["default", "tablet"],
+    "metadata": [
+      {
+        "name": "UseTsHar",
+        "value": "true"
+      }
+    ]
   },
+
 }

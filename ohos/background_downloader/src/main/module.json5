@@ -1,0 +1,11 @@
+{
+  "module": {
+    "name": "worker",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ],
+
+  }
+}

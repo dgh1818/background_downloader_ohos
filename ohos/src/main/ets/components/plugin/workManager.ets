@@ -1,0 +1,3 @@
+// class workManager {
+//   static getWorkInfosByTag:
+// }

@@ -77,8 +77,7 @@ export class Callbacks {
     const result = await Callbacks.methodChannelMutex.lockAsync<MethodChannel | undefined>(async () => {
       if (Callbacks.callbackMethodChannel == undefined) {
         let methodChannelCompleter = createDeferred<MethodChannel | undefined>();
-        mainHandler.postTask(() => {
-
+        globalThis.setTimeout(() => {
           try {
             let options: preferences.Options = { name: 'DEFAULT' };
             let prefs = preferences.getPreferencesSync(context, options);
@@ -88,34 +87,34 @@ export class Callbacks {
               console.warn(
                 Callbacks.TAG,
                 "getMethodChannel without registered callbackDispatcherRawHandle"
-              )
+              );
+              methodChannelCompleter.resolve(undefined);
               return;
             }
 
-            let flutterEngine = new FlutterEngine(context, null, null, null)
+            let flutterEngine = new FlutterEngine(context, null, null, null);
             let callbackDispatcherCallback = FlutterCallbackInformation.lookupCallbackInformation(rawHandle);
 
             if (callbackDispatcherCallback == null) {
               console.warn(
                 Callbacks.TAG,
                 "invokeOnStartCallback failed to find callbackDispatcher"
-              )
+              );
+              methodChannelCompleter.resolve(undefined);
               return;
             }
             Callbacks.callbackMethodChannel = new MethodChannel(
               flutterEngine.dartExecutor.getBinaryMessenger(),
               "com.bbflight.background_downloader.callbacks"
-            )
+            );
             methodChannelCompleter.resolve(Callbacks.callbackMethodChannel);
           } catch (e) {
-            console.error(Callbacks.TAG, "Error creating MethodChannel", e)
+            console.error(Callbacks.TAG, "Error creating MethodChannel", e);
             methodChannelCompleter.resolve(undefined);
           }
+        }, 0);
 
-          return methodChannelCompleter.promise;
-
-          // 这里的代码在主线程执行 —— 等价于 Android 的 Handler(Looper.getMainLooper()).post { ... }
-        });
+        await methodChannelCompleter.promise;
       }
 
       return Callbacks.callbackMethodChannel;
@@ -131,13 +130,14 @@ export class Callbacks {
     task?: Task,
     statusUpdate?: TaskStatusUpdate,
   ): Promise<Any> {
+    console.error("enter invokeCallback");
     let methodChannel = await Callbacks.getMethodChannel(context);
     if(methodChannel==undefined) {
       return;
     }
     return Callbacks.methodChannelMutex.lockAsync<ESObject>(async () => {
       let resultingObjectAsJsonStringCompleter = createDeferred<string | undefined>();
-      mainHandler.postTask(() => {
+      globalThis.setTimeout(() => {
         let arg = task!=undefined ? JSON.stringify(task) : JSON.stringify(statusUpdate);
         console.info(Callbacks.TAG, "Invoking"+ methodName+" for taskId " + task?.taskId);
         methodChannel!.invokeMethod(
@@ -146,7 +146,7 @@ export class Callbacks {
           FlutterResultHandlerArkTS(resultingObjectAsJsonStringCompleter)
         )
 
-      });
+      }, 0);
 
       let objectAsJsonString = await resultingObjectAsJsonStringCompleter.promise;
       return (objectAsJsonString == undefined) ? undefined :(methodName == "beforeTaskStartCallback"?JSON.parse(objectAsJsonString) as TaskStatusUpdate:JSON.parse(objectAsJsonString) as Task)
