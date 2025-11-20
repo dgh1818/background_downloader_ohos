@@ -118,7 +118,7 @@ export async function methodEnqueueAll_task(
 
           const options: preferences.Options = { name: 'DEFAULT' };
           const pref_current = preferences.getPreferencesSync(uiContext, options);
-          TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, pref_current, uiContext);
+          await TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, pref_current, uiContext);
 
           success = true;
         }

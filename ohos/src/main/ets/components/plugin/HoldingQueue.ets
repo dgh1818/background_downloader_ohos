@@ -42,16 +42,17 @@ export class HoldingQueue {
   // private processSignal = Channel<Unit>(Channel.UNLIMITED)
   public stateMutex:ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
 
-  public static taskFinished(task: Task) {
+  public static async taskFinished(task: Task): Promise<void> {
     const queue = BDPlugin.holdingQueue;
-    if (queue) {
-      try {
-        HoldingQueue.taskFinished(task);
-      } catch (e) {
-        // The instance method already logs the error.
-      }
+    if (!queue) {
+      return;
     }
 
+    try {
+      await queue.taskFinished(task);
+    } catch (error) {
+      console.error(BDPlugin.TAG, "Failed to process finished task", error);
+    }
   }
 
   /**
@@ -70,12 +71,11 @@ export class HoldingQueue {
   }
 
   private advanceQueue() {
-    this.processQueue();
-    if (this.queue.length > 0) {
-      this.advanceQueueInFuture();
-    } else {
-      this.clearAdvanceTimer();
-    }
+    this.clearAdvanceTimer();
+    this.advanceTimerId = globalThis.setTimeout(() => {
+      this.advanceTimerId = undefined;
+      this.advanceQueue();
+    }, 10000);
   }
 
   /**

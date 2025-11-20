@@ -241,13 +241,14 @@ export class TaskWorker {
     let notificationConfigForReEnqueue: string | undefined;
     let resumeDataForReEnqueue: ResumeData | undefined;
 
-    await TaskWorker.workerShareableData!.withLock(() => {
-      removedFromReEnqueue = TaskWorker.workerShareableData!.tasksToReEnqueue.delete(task)
+    await BDPlugin.workerShareableData!.withLock(() => {
+      removedFromReEnqueue = BDPlugin.workerShareableData!.tasksToReEnqueue.delete(task)
       if (removedFromReEnqueue) {
-        notificationConfigForReEnqueue = TaskWorker.workerShareableData!.notificationConfigJsonStrings.get(task.taskId)
-        resumeDataForReEnqueue = TaskWorker.workerShareableData!.localResumeData.get(task.taskId)
+        notificationConfigForReEnqueue = BDPlugin.workerShareableData!.notificationConfigJsonStrings.get(task.taskId)
+        resumeDataForReEnqueue = BDPlugin.workerShareableData!.localResumeData.get(task.taskId)
+        shouldSignalEnd = BDPlugin.workerShareableData!.tasksToReEnqueue.size == 0
       }
-      shouldSignalEnd = TaskWorker.workerShareableData!.tasksToReEnqueue.size == 0
+
     })
 
     if (removedFromReEnqueue) {
@@ -271,9 +272,6 @@ export class TaskWorker {
       if (shouldSignalEnd) {
         WiFi.reEnqueue(undefined) // signal end of batch
       }
-
-    } else if (shouldSignalEnd) {
-      WiFi.reEnqueue(undefined) // signal end of batch
     }
 
 
