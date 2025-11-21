@@ -171,6 +171,8 @@ export class QueueService {
       return;
     }
 
+    console.error("enter const argList: Object[] = [TaskWorker.taskToJsonString(bgPost.task)];");
+
     const argList: Object[] = [TaskWorker.taskToJsonString(bgPost.task)];
     if (Array.isArray(bgPost.arg)) {
       argList.push(...bgPost.arg as Object[]);
@@ -180,9 +182,10 @@ export class QueueService {
 
     const completer = createDeferred<boolean>();
     try {
-      channel.invokeMethod(bgPost.method, argList, booleanResultHandler(completer));
+      channel.invokeMethod(bgPost.method, argList);
+      completer.resolve(true);
     } catch (error) {
-      console.warn(
+      console.error(
         TaskWorker.TAG,
         `Exception trying to post ${bgPost.method} to background channel: ${error.message}`
       );

@@ -12,7 +12,9 @@ import { TaskWorker, TaskWorkerKey } from '../../../../../../src/main/ets/compon
 import { http } from '@kit.NetworkKit';
 import { baseDirPath, FileUtils, getContentLength, insufficientSpace, parseRange, suggestFilename } from '../../../../../../src/main/ets/components/plugin/Helper';
 import { fileIo as fs } from '@kit.CoreFileKit';
-import BDPlugin, { WorkerShareableData } from '../../../../../../src/main/ets/components/plugin/BDPlugin';
+import BDPlugin, {
+  WorkerCommand,
+  WorkerShareableData } from '../../../../../../src/main/ets/components/plugin/BDPlugin';
 import { collections, ErrorEvent, MessageEvents, ThreadWorkerGlobalScope, uri, util, worker } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { NotificationConfig } from '../../../../../../src/main/ets/components/plugin/Notifications';
@@ -359,11 +361,12 @@ const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");
+  let workercommand = event.data as WorkerCommand;
 
-  let command = event.data["startWork"] as string;
-  let sendableUIContext = event.data["sendableContext"] as sendableContextManager.SendableContext;
-  let taskWorkerData = event.data["taskWorkerData"] as collections.Map<string,number|string|boolean|undefined|ResumeData>
-  let workerShareableData = event.data["workerShareableData"] as WorkerShareableData;
+  let command = workercommand.command;
+  let sendableUIContext = workercommand.sendableUIContext;
+  let taskWorkerData = workercommand.taskWorkerData;
+  let workerShareableData = workercommand.workerShareableData;
   if(!workerShareableData) {
     return;
   }

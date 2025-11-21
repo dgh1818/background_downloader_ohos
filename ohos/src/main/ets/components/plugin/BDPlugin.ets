@@ -28,9 +28,18 @@ import {
 } from "@kit.AbilityKit";
 import { hash } from '@kit.CoreFileKit';
 import { BusinessError } from '@ohos.base';
-import { ArkTSUtils, ArrayList, collections,
+import {
+  ArkTSUtils,
+  ArrayList,
+  collections,
   ErrorEvent,
-  List, MessageEvents, taskpool, uri, url, worker } from "@kit.ArkTS";
+  List,
+  MessageEvents,
+  taskpool,
+  uri,
+  url,
+  worker
+} from "@kit.ArkTS";
 import { fileUri } from '@kit.CoreFileKit';
 import dataPreferences from '@ohos.data.preferences'
 import { photoAccessHelper } from "@kit.MediaLibraryKit";
@@ -58,15 +67,14 @@ export class WorkerShareableData {
     // this.triggerMaxDelay = triggerMaxDelay;
   }
 
-  public haveLoggedProxyMessage:boolean = false;
-  public remainingBytesToDownload:collections.Map<string, number> = new collections.Map<string, number>();
-  public pausedTaskIds:collections.Set<string> = new collections.Set<string>();
-  public tasksToReEnqueue:collections.Set<Task> = new collections.Set<Task>();
-  public localResumeData:collections.Map<string, ResumeData> = new collections.Map<string, ResumeData>()
-  public notificationConfigJsonStrings:collections.Map<string, string> = new collections.Map<string, string>();
-  public canceledTaskIds:collections.Set<string> = new collections.Set<string>()
-  public cancelUpdateSentForTaskId:collections.Map<string, number> = new collections.Map<string, number>();
-
+  public haveLoggedProxyMessage: boolean = false;
+  public remainingBytesToDownload: collections.Map<string, number> = new collections.Map<string, number>();
+  public pausedTaskIds: collections.Set<string> = new collections.Set<string>();
+  public tasksToReEnqueue: collections.Set<Task> = new collections.Set<Task>();
+  public localResumeData: collections.Map<string, ResumeData> = new collections.Map<string, ResumeData>()
+  public notificationConfigJsonStrings: collections.Map<string, string> = new collections.Map<string, string>();
+  public canceledTaskIds: collections.Set<string> = new collections.Set<string>()
+  public cancelUpdateSentForTaskId: collections.Map<string, number> = new collections.Map<string, number>();
   public lock: ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
 
   public async withLock(action: () => void | Promise<void>): Promise<void> {
@@ -77,6 +85,33 @@ export class WorkerShareableData {
   // public requireWifi?: boolean = false;
   // public triggerUpdateDelay?: number = 5000;
   // public triggerMaxDelay?: number = 50000;
+}
+
+@Sendable
+export class WorkerCommand {
+  constructor(
+    command: string,
+    sendableUIContext: sendableContextManager.SendableContext,
+    taskWorkerData: collections.Map<string, number | string | boolean | undefined | ResumeData>,
+    workerShareableData: WorkerShareableData,
+    // requireWifi?: boolean | undefined,
+    // triggerUpdateDelay?: number | undefined,
+    // triggerMaxDelay?: number | undefined,
+  ) {
+    this.command = command;
+    this.sendableUIContext = sendableUIContext;
+    this.taskWorkerData = taskWorkerData;
+    this.workerShareableData = workerShareableData;
+
+    // this.requireWifi = requireWifi;
+    // this.triggerUpdateDelay = triggerUpdateDelay;
+    // this.triggerMaxDelay = triggerMaxDelay;
+  }
+
+  public command: string;
+  public sendableUIContext: sendableContextManager.SendableContext;
+  public taskWorkerData: collections.Map<string, number | string | boolean | undefined | ResumeData>
+  public workerShareableData: WorkerShareableData;
 }
 
 export default class BDPlugin implements FlutterPlugin, MethodCallHandler, AbilityAware {
@@ -107,14 +142,12 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static bgChannelByTaskId = new Map<string, MethodChannel>()
   public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
   public static requireWifi = RequireWiFi.asSetByTask
-  public static workerShareableData:WorkerShareableData = new WorkerShareableData();
-
+  public static workerShareableData: WorkerShareableData = new WorkerShareableData();
   // <taskId, timeMillis>
   // <taskId>, acts as flag
   //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
   // for when WiFi requirement changes
   public static taskIdsRequiringWiFi = new Set<string>()
-
   // by taskId
   public static forceFailPostOnBackgroundChannel = false
   public static prefsLock = new ArkTSUtils.locks.AsyncLock()
@@ -122,6 +155,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
   public static holdingQueue?: HoldingQueue
   public static latestPluginInstance?: BDPlugin;
+  public workCommand?:WorkerCommand;
 
   static async doEnqueue(
     context: common.UIAbilityContext,
@@ -168,7 +202,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       : workScheduler.NetworkType.NETWORK_TYPE_ANY;
 
     let workerName: string;
-    console.error("before switch (task.taskType)"+task.taskType);
+    console.error("before switch (task.taskType)" + task.taskType);
     switch (task.taskType) {
       case "ParallelDownloadTask":
         workerName = "ParallelDownloadTaskWorker";
@@ -200,37 +234,32 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     //   parameters:parameters,
     // };
 
-
-    const downloadTaskWorker: worker.ThreadWorker = new worker.ThreadWorker('../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets');
+    const downloadTaskWorker: worker.ThreadWorker =
+      new worker.ThreadWorker('../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets');
 
     downloadTaskWorker.onerror = (err: ErrorEvent) => {
       console.info("Worker出错了：" + err.message);
     }
 
-
-      if(context == undefined) {
-        console.error("BDPlugin.sendableUIContext is false")
+    if (context == undefined) {
+      console.error("BDPlugin.sendableUIContext is false")
       return false;
     }
     //let requireWifi = BDPlugin.requireWifi.valueOf() == 1 ? true:false;
     let requireWifi = false;
 
-    let taskWorkerData = new collections.Map<string,number|string|boolean|undefined|ResumeData>();
+    let taskWorkerData = new collections.Map<string, number | string | boolean | undefined | ResumeData>();
 
     taskWorkerData.set(TaskWorkerKey.keyTask, TaskWorker.taskToJsonString(task));
-    taskWorkerData.set(TaskWorkerKey.keyNotificationConfig,notificationConfigJsonString);
-    taskWorkerData.set(TaskWorkerKey.keyResumeDataData,resumeData?.data);
-    taskWorkerData.set(TaskWorkerKey.keyStartByte,resumeData?.requiredStartByte);
-    taskWorkerData.set(TaskWorkerKey.keyETag,resumeData?.eTag);
+    taskWorkerData.set(TaskWorkerKey.keyNotificationConfig, notificationConfigJsonString);
+    taskWorkerData.set(TaskWorkerKey.keyResumeDataData, resumeData?.data);
+    taskWorkerData.set(TaskWorkerKey.keyStartByte, resumeData?.requiredStartByte);
+    taskWorkerData.set(TaskWorkerKey.keyETag, resumeData?.eTag);
 
     //let sendableObject:SendableObject = new SendableObject("startWork",sendableContext,taskWorkerData)
+    let workCommand = new WorkerCommand("startWork",BDPlugin.sendableUIContext!,taskWorkerData,BDPlugin.workerShareableData)
 
-    downloadTaskWorker.postMessageWithSharedSendable(
-      { command:"startWork",
-        sendableContext:BDPlugin.sendableUIContext,
-        taskWorkerData: taskWorkerData,
-        workerShareableData:BDPlugin.workerShareableData,
-        })
+    downloadTaskWorker.postMessageWithSharedSendable(workCommand);
 
     //downloadTaskWorker.postMessageWithSharedSendable(sendableObject);
     //.startWork(request);
@@ -285,7 +314,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   }
 
   public static uiContext?: common.UIAbilityContext;
-  public static sendableUIContext? : sendableContextManager.SendableContext;
+  public static sendableUIContext?: sendableContextManager.SendableContext;
   private prefs?: dataPreferences.Preferences;
   private channel?: MethodChannel
   private backgroundChannel?: MethodChannel
@@ -358,7 +387,6 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
         break;
 
 
-
       default:
         result.notImplemented();
         break;
@@ -389,36 +417,36 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   }
 
   private methodConfigForegroundFileSize(call: MethodCall, result: MethodResult) {
-     let fileSize = call.args as number;
-     this.updateSharedPreferences(BDPlugin.keyConfigForegroundFileSize,fileSize);
-     if(fileSize==0) {
-       console.error("Enabled foreground mode for all tasks");
-     } else if (fileSize == -1) {
-       console.error("Disabled foreground mode for all tasks");
-     } else {
-       console.error("Set foreground file size threshold to" + fileSize + "MB");
-     }
+    let fileSize = call.args as number;
+    this.updateSharedPreferences(BDPlugin.keyConfigForegroundFileSize, fileSize);
+    if (fileSize == 0) {
+      console.error("Enabled foreground mode for all tasks");
+    } else if (fileSize == -1) {
+      console.error("Disabled foreground mode for all tasks");
+    } else {
+      console.error("Set foreground file size threshold to" + fileSize + "MB");
+    }
 
-     result.success({});
+    result.success({});
   }
 
-/**
- * Helper function to update or delete the [value] in shared preferences under [key]
- *
- * If [value] is null, the [key] is deleted
- */
-private updateSharedPreferences(key: string, value?: number) {
-  let options: preferences.Options = { name: 'DEFAULT' };
-  let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
-  if(value!=undefined) {
-    prefs.putSync(key,value)
-  } else {
-    prefs.deleteSync(key);
-  }
+  /**
+   * Helper function to update or delete the [value] in shared preferences under [key]
+   *
+   * If [value] is null, the [key] is deleted
+   */
+  private updateSharedPreferences(key: string, value?: number) {
+    let options: preferences.Options = { name: 'DEFAULT' };
+    let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+    if (value != undefined) {
+      prefs.putSync(key, value)
+    } else {
+      prefs.deleteSync(key);
+    }
 
-  prefs.flushSync();
-  console.info(BDPlugin.TAG, "Setting preference key" + key + ":" + value)
-}
+    prefs.flushSync();
+    console.info(BDPlugin.TAG, "Setting preference key" + key + ":" + value)
+  }
 
   /**
    * Configure the holding queue
@@ -560,19 +588,18 @@ private updateSharedPreferences(key: string, value?: number) {
   // return true
   // }
 
-
-  private methodEnqueueAll(call: MethodCall, result: MethodResult) {
+  private async methodEnqueueAll(call: MethodCall, result: MethodResult) {
     let args: Array<ESObject> = call.args as Array<ESObject>;
     let taskListJsonString = args[0] as string;
     let notificationConfigListJsonString = args[1] as string;
 
     BDPlugin.latestPluginInstance = this;
 
-    if(!BDPlugin.sendableUIContext) {
+    if (!BDPlugin.sendableUIContext) {
       console.error("sendableUIContext is error");
       return
     }
-    const rawTasks = JSON.parse(taskListJsonString) as Map<string,Task>;
+    const rawTasks = JSON.parse(taskListJsonString) as Map<string, Task>;
     rawTasks.forEach(async (value, key) => {
       const task = value;
       const bgChannel = BDPlugin.methodbackgroundChannel(this);
@@ -583,7 +610,8 @@ private updateSharedPreferences(key: string, value?: number) {
       }
     })
 
-    methodEnqueueAll_task(taskListJsonString,notificationConfigListJsonString);
+    let results = await methodEnqueueAll_task(taskListJsonString, notificationConfigListJsonString);
+    result.success(results);
 
     // const task = new taskpool.Task(
     //   methodEnqueueAll_task,
@@ -604,61 +632,60 @@ private updateSharedPreferences(key: string, value?: number) {
   }
 }
 
-
-        //
-        // class TaskScope {
-        //   private tasks: Set<taskpool.Task>; // 保存 taskpool.Task 实例
-        //
-        //   constructor() {
-        //     this.tasks = new Set();
-        //   }
-        //
-        //   // 提交一个 taskpool 任务并返回一个 Promise
-        //   // fn 必须是一个 @Concurrent 标注的函数引用（或已注册到 TaskPool 的 worker 函数）
-        //   async launch(fn: Function, ...args: ESObject[]): Promise<ESObject> {
-        //     // 构造 task（TaskPool API 可能略有差异，请按平台替换）
-        //     const t = new taskpool.Task(fn, ...args);
-        //     this.tasks.add(t);
-        //
-        //     try {
-        //       const res = await taskpool.execute(t);
-        //       //const res = await t.execute();
-        //       // 任务完成后从集合中移除引用
-        //       this.tasks.delete(t);
-        //       return res;
-        //     } catch (err) {
-        //       taskpool.cancel(t)
-        //       this.tasks.delete(t);
-        //     }
-        //   }
-        //
-        //   // 取消一个正在执行的任务（如果 TaskPool 支持 cancel）
-        //   cancelTask(task: any): void {
-        //     try {
-        //       taskpool.cancel(task);
-        //     } catch (e) {
-        //       // ignore
-        //     } finally {
-        //       this.tasks.delete(task);
-        //     }
-        //   }
-        //
-        //   // 取消 scope 内的所有任务（类似 CoroutineScope.cancel()）
-        //   cancelAll(): void {
-        //     const snapshot = Array.from(this.tasks);
-        //     for (let i = 0; i < snapshot.length; i++) {
-        //       const t = snapshot[i];
-        //       try {
-        //         taskpool.cancel(t);
-        //       } catch (e) {
-        //         // 可能任务已完成或 API 不支持跨线程取消，忽略错误
-        //       }
-        //     }
-        //     this.tasks.clear();
-        //   }
-        //
-        //   // 是否还有未完成的任务
-        //   isActive(): boolean {
-        //     return this.tasks.size > 0;
-        //   }
-        // }
+//
+// class TaskScope {
+//   private tasks: Set<taskpool.Task>; // 保存 taskpool.Task 实例
+//
+//   constructor() {
+//     this.tasks = new Set();
+//   }
+//
+//   // 提交一个 taskpool 任务并返回一个 Promise
+//   // fn 必须是一个 @Concurrent 标注的函数引用（或已注册到 TaskPool 的 worker 函数）
+//   async launch(fn: Function, ...args: ESObject[]): Promise<ESObject> {
+//     // 构造 task（TaskPool API 可能略有差异，请按平台替换）
+//     const t = new taskpool.Task(fn, ...args);
+//     this.tasks.add(t);
+//
+//     try {
+//       const res = await taskpool.execute(t);
+//       //const res = await t.execute();
+//       // 任务完成后从集合中移除引用
+//       this.tasks.delete(t);
+//       return res;
+//     } catch (err) {
+//       taskpool.cancel(t)
+//       this.tasks.delete(t);
+//     }
+//   }
+//
+//   // 取消一个正在执行的任务（如果 TaskPool 支持 cancel）
+//   cancelTask(task: any): void {
+//     try {
+//       taskpool.cancel(task);
+//     } catch (e) {
+//       // ignore
+//     } finally {
+//       this.tasks.delete(task);
+//     }
+//   }
+//
+//   // 取消 scope 内的所有任务（类似 CoroutineScope.cancel()）
+//   cancelAll(): void {
+//     const snapshot = Array.from(this.tasks);
+//     for (let i = 0; i < snapshot.length; i++) {
+//       const t = snapshot[i];
+//       try {
+//         taskpool.cancel(t);
+//       } catch (e) {
+//         // 可能任务已完成或 API 不支持跨线程取消，忽略错误
+//       }
+//     }
+//     this.tasks.clear();
+//   }
+//
+//   // 是否还有未完成的任务
+//   isActive(): boolean {
+//     return this.tasks.size > 0;
+//   }
+// }

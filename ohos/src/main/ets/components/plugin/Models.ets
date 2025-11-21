@@ -157,6 +157,36 @@ export class Task {
     });
   }
 
+  public static fromPlain(params?: Task): Task {
+    return new Task({
+      taskId: params?.taskId,
+      url: params?.url,
+      filename: params?.filename,
+      headers: params?.headers,
+      baseDirectory: params?.baseDirectory,
+      group: params?.group,
+      updates: params?.updates,
+      taskType: params?.taskType,
+      urls: params?.urls,
+      httpRequestMethod: params?.httpRequestMethod,
+      chunks: params?.chunks,
+      post: params?.post,
+      fileField: params?.fileField,
+      mimeType: params?.mimeType,
+      fields: params?.fields,
+      directory: params?.directory,
+      requiresWiFi: params?.requiresWiFi,
+      retries: params?.retries,
+      retriesRemaining: params?.retriesRemaining,
+      allowPause: params?.allowPause,
+      priority: params?.priority,
+      metaData: params?.metaData,
+      displayName: params?.displayName,
+      creationTime: params?.creationTime,
+      options: params?.options,
+    });
+  }
+
   public providesProgressUpdates(): boolean {
     return this.updates === Updates.progress || this.updates === Updates.statusAndProgress
   }
@@ -193,6 +223,7 @@ export class Task {
   hasFilename(): boolean {
     const unpackedFilename = this.filename ?? "";
     return unpackedFilename.length > 0 && unpackedFilename != "?";
+    let task:Task;
   }
 
   // fileExists(path: string): boolean {

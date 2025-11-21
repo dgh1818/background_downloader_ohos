@@ -356,13 +356,12 @@ class DownloadTaskWorker extends TaskWorker {
 
 type WorkerParamValue = string | number | boolean | sendableContextManager.SendableContext
 
-
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");
 
-  let command = event.data["startWork"] as string;
+  let command = event.data["command"] as string;
   let sendableUIContext = event.data["sendableContext"] as sendableContextManager.SendableContext;
   let taskWorkerData = event.data["taskWorkerData"] as collections.Map<string,number|string|boolean|undefined|ResumeData>
   let workerShareableData = event.data["workerShareableData"] as WorkerShareableData;

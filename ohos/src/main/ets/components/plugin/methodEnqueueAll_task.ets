@@ -31,9 +31,8 @@ export async function methodEnqueueAll_task(
   taskListJsonString: string,
   notificationConfigListJsonString: string,
 
-): Promise<Array<boolean> | undefined> {
+): Promise<Array<boolean>> {
 
-  try {
     console.error(BDPlugin.TAG + "enter methodEnqueueAll_task");
     const rawTasks = JSON.parse(taskListJsonString) as Map<string, Task | undefined>;
     if (!rawTasks) {
@@ -44,9 +43,6 @@ export async function methodEnqueueAll_task(
     if (!rawNotificationConfigs) {
       console.error("rawNotificationConfigs is undefined")
     }
-    if (!BDPlugin.uiContext) {
-      return undefined;
-    }
     let uiContext = BDPlugin.uiContext;
 
     const results: boolean[] = [];
@@ -56,9 +52,15 @@ export async function methodEnqueueAll_task(
     const entries = Array.from(rawTasks.entries());
 
     for (let i = 0; i < entries.length; i++) {
+      if (!uiContext) {
+        results.push(false);
+        continue;
+      }
+
       const entry = entries[i]; // entry 是形如 [key, task] 的数组/元组
       //const key = entry[0] as string;  // 不用解构，直接下标取
-      const task = entry[1] as Task;
+      //let task = entry[1] as Task;
+      let task = Task.fromPlain(entry[1] as Task);
 
       if (!task) {
         results.push(false);
@@ -119,6 +121,7 @@ export async function methodEnqueueAll_task(
           const options: preferences.Options = { name: 'DEFAULT' };
           const pref_current = preferences.getPreferencesSync(uiContext, options);
           await TaskWorker.processStatusUpdate(task, TaskStatus.enqueued, pref_current, uiContext);
+          console.error(BDPlugin.TAG, 'processStatusUpdate done ' + task.taskId);
 
           success = true;
         }
@@ -131,7 +134,4 @@ export async function methodEnqueueAll_task(
     }
 
     return results;
-  } catch (e) {
-    return undefined;
-  }
 }
