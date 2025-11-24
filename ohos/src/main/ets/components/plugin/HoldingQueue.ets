@@ -61,6 +61,7 @@ export class HoldingQueue {
   public async add(item: EnqueueItem) {
     await this.stateMutex.lockAsync<void>(async () => {
       this.queue.push(item);
+      this.enqueuedTaskIds.push(item.task.taskId);
       this.sortQueue();
       NotificationService.registerEnqueue(
         item,
@@ -71,11 +72,21 @@ export class HoldingQueue {
   }
 
   private advanceQueue() {
+    // Kick off or continue the single consumer loop, similar to Android's processSignal
+    this.processQueue();
+
+    // Keep a heartbeat so the queue doesn't dry up if no new tasks arrive
     this.clearAdvanceTimer();
-    this.advanceTimerId = globalThis.setTimeout(() => {
-      this.advanceTimerId = undefined;
-      this.advanceQueue();
-    }, 10000);
+    if (this.queue.length > 0) {
+      this.advanceTimerId = globalThis.setTimeout(() => {
+        this.advanceTimerId = undefined;
+        this.processQueue();
+        // Reschedule if there is still work waiting
+        if (this.queue.length > 0) {
+          this.advanceQueue();
+        }
+      }, 10000);
+    }
   }
 
   /**

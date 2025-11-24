@@ -296,16 +296,11 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
       const tasksMap = getTaskMap(prefs);
       tasksMap.set(task.taskId, task);
-      const serializedTasks: Record<string, Object> = {};
-      const iterator = tasksMap.entries();
-      let entry = iterator.next();
-      while (!entry.done) {
-        const pair = entry.value;
-        const storedTaskId = pair[0];
-        const storedTask = pair[1];
-        serializedTasks[storedTaskId] = storedTask;
-        entry = iterator.next();
-      }
+      // Store as plain object for compatibility with existing reads
+      const serializedTasks: Record<string, Task> = {};
+      tasksMap.forEach((value, key) => {
+        serializedTasks[key] = value;
+      });
       prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
       prefs.flushSync();
     });

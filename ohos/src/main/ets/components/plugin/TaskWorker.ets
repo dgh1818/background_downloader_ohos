@@ -188,9 +188,14 @@ export class TaskWorker {
     prefs: dataPreferences.Preferences
   ): void {    //ohos share
     BDPlugin.prefsLock.lockAsync(() => {
-      let jsonString = prefs.getSync(prefsKey, "{}") as string
-      const mapByTaskId = JSON.parse(jsonString) as Map<string, string>;
-      mapByTaskId.set(taskId,item);
+      const jsonString = prefs.getSync(prefsKey, "{}") as string;
+      let mapByTaskId: Record<string, string> = {};
+      try {
+        mapByTaskId = JSON.parse(jsonString) as Record<string, string>;
+      } catch (_) {
+        mapByTaskId = {};
+      }
+      mapByTaskId[taskId] = item;
       prefs.putSync(prefsKey, JSON.stringify(mapByTaskId));
       prefs.flushSync();
     })
@@ -401,14 +406,10 @@ export class TaskWorker {
         let tasksMap = getTaskMap(prefs)
         console.error("getTaskMap success");
         tasksMap.delete(task.taskId)
-        let serializedTasks: Map<string,Task> = new Map<string,Task>()
-
+        const serializedTasks: Record<string, Task> = {};
         tasksMap.forEach((value, key) => {
-          serializedTasks.set(key,value);
+          serializedTasks[key] = value;
         });
-
-        console.error("serializedTasks.set success");
-
         prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
         console.error("putSync success");
         prefs.flushSync();
@@ -669,18 +670,28 @@ export class TaskWorker {
 
 /** Return the map of tasks stored in preferences */
 export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task> {
-  const tasksMapJson = (prefs.getSync(BDPlugin.keyTasksMap, "{}") as string) ?? "{}"
-  const parsed = JSON.parse(tasksMapJson) as Map<string,Task>;
-  const result = new Map<string, Task>()
+  const tasksMapJson = (prefs.getSync(BDPlugin.keyTasksMap, "{}") as string) ?? "{}";
+  let parsed: Record<string, Task> | undefined;
+  try {
+    parsed = JSON.parse(tasksMapJson) as Record<string, Task>;
+  } catch (_) {
+    parsed = {};
+  }
 
-  parsed.forEach((value, key) => {
-    const taskId = key;
-    const taskData = value;
-    result.set(taskId, taskData)
+  const result = new Map<string, Task>();
+  if (!parsed) {
+    return result;
+  }
+
+  const entries: Array<[string, Task]> = Object.entries(parsed);
+  entries.forEach((entry) => {
+    const taskId = entry[0];
+    const taskData = entry[1];
+    const task = Task.fromPlain(taskData as Task);
+    result.set(taskId, task);
   });
-  //const entries = Object.entries(parsed)
 
-  return result
+  return result;
 }
 //
 // const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
