@@ -141,7 +141,8 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static firstBackgroundChannel?: MethodChannel;
   public static bgChannelByTaskId = new Map<string, MethodChannel>()
   public static flutterEngineByTaskId = new Map<string, FlutterEngine>();
-  public static requireWifi = RequireWiFi.asSetByTask
+  // Avoid touching the enum at module eval time; initialize in onAttachedToAbility
+  public static requireWifi: RequireWiFi = 0 as RequireWiFi;
   public static workerShareableData: WorkerShareableData = new WorkerShareableData();
   // <taskId, timeMillis>
   // <taskId>, acts as flag
@@ -402,7 +403,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
     let options: preferences.Options = { name: 'DEFAULT' };
     let prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
-    BDPlugin.requireWifi = prefs.getSync('keyRequireWiFi', 0) as RequireWiFi;
+    BDPlugin.requireWifi = (prefs.getSync('keyRequireWiFi', 0) as RequireWiFi) ?? (0 as RequireWiFi);
     console.error("attach to engine successfully");
 
   }
