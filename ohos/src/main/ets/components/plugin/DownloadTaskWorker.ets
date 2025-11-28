@@ -263,7 +263,8 @@ class DownloadTaskWorker extends TaskWorker {
         this.bytesTotal += bytes.byteLength
         transferResult = TaskStatus.complete
         if (outputStream) {
-          fs.writeSync(outputStream.fd, bytes)
+          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+          fs.writeSync(outputStream.fd, buffer)
           fs.closeSync(outputStream)
         }
       } catch (e) {
@@ -375,7 +376,7 @@ workerPort.onmessage = async (event: MessageEvents) => {
     console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a valid UI context')
     return;
   }
-  console.error("enter on message:command is" + command);
+  //console.error("enter on message:command is" + command);
   switch (command) {
     case "startWork": {
       // let TaskWorkerData = new collections.Map<string, string | number | boolean | ResumeData | undefined>();
@@ -424,4 +425,3 @@ workerPort.onmessageerror = () => {
 workerPort.onerror = (err: ErrorEvent) => {
   console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onerror for DownloadTaskWorker:', err.message)
 }
-

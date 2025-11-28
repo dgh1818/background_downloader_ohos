@@ -250,12 +250,16 @@ class DownloadTaskWorker extends TaskWorker {
         }
         tempFile = this.tempFilePath
       }
+      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "destFilePath", destFilePath, "tempFile", tempFile, "contentLength", contentLength);
       let outputStream: fs.File | undefined
       if (tempFile) {
         const openMode = this.isResume
           ? fs.OpenMode.READ_WRITE | fs.OpenMode.APPEND
           : fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE
         outputStream = fs.openSync(tempFile, openMode)
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "opened tempFile", tempFile, "openMode", openMode)
+      } else {
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "no tempFile, usesUri flow");
       }
       //BDPlugin.remainingBytesToDownload.set(this.task.taskId, contentLength)
       super.determineRunInForeground(this.task, contentLength)
@@ -266,13 +270,17 @@ class DownloadTaskWorker extends TaskWorker {
           : (response.result as ArrayBuffer ?? new ArrayBuffer(0))
         const bytes = dataToWrite instanceof ArrayBuffer ? new Uint8Array(dataToWrite) : dataToWrite
         this.bytesTotal += bytes.byteLength
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "about to write bytes", bytes.byteLength, "result type", typeof response.result);
         transferResult = TaskStatus.complete
         if (outputStream) {
-          fs.writeSync(outputStream.fd, bytes)
+          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+          fs.writeSync(outputStream.fd, buffer)
           fs.closeSync(outputStream)
+          console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "writeSync ok, closed outputStream");
         }
       } catch (e) {
         this.setTaskException(e as ESObject)
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write failed", (e as Error).message ?? e);
         transferResult = TaskStatus.failed
       }
       switch (transferResult as number) {
