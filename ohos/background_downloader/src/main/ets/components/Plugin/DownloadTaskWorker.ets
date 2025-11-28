@@ -33,8 +33,11 @@ class DownloadTaskWorker extends TaskWorker {
   public taskRangeStartByte = 0 // Start of the Task's download range
   public eTag?: string
 
-  public async startDoTask() {
-    return this.doTask(); // 在类内部，访问 protected 没问题
+    public async startDoTask() {
+    console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "startDoTask begin");
+    const result = await this.doTask();
+    console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "startDoTask done with status", result);
+    return result;
   }
 
   /**
@@ -161,9 +164,11 @@ class DownloadTaskWorker extends TaskWorker {
       httpOptions.header = header;
       response = await httpRequest.request(this.task.url, httpOptions);
     } catch (e) {
+      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http request threw", e);
       this.setTaskException(e as string)
       return TaskStatus.failed
     }
+    console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http response code", response.responseCode, "url", this.task.url);
     this.responseStatusCode = response.responseCode
     const headerMap = new Map<string, string>()
     Object.keys(response.header ?? {}).forEach(key => {
@@ -349,6 +354,7 @@ class DownloadTaskWorker extends TaskWorker {
         this.responseBody = errorContent
         return TaskStatus.notFound
       }
+      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http non-2xx, code", response.responseCode, "body", errorContent);
       return TaskStatus.failed
     }
   }
@@ -386,18 +392,21 @@ workerPort.onmessage = async (event: MessageEvents) => {
       // });
 
       let worker = new DownloadTaskWorker(uiContext, taskWorkerData)
+      console.error("startWork: worker instance created");
       let taskJson = taskWorkerData.get(TaskWorkerKey.keyTask) as string | undefined
       //worker.haveLoggedProxyMessage
       if (!taskJson) {
         console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a task payload')
         return
       }
-      worker.task = JSON.parse(taskJson) as Task;
+      worker.task = Task.fromPlain(JSON.parse(taskJson) as Task);
+      console.error("startWork: task parsed:Json is "+taskJson);
       worker.notificationConfigJsonString =
         taskWorkerData.get(TaskWorkerKey.keyNotificationConfig) as string | undefined;
       worker.notificationConfig = worker.notificationConfigJsonString
         ? (JSON.parse(worker.notificationConfigJsonString) as NotificationConfig)
         : undefined
+      console.error("startWork: notification config parsed");
       const resumeDataPath = taskWorkerData.get(TaskWorkerKey.keyResumeDataData) as string | undefined
       const requiredStartByte = taskWorkerData.get(TaskWorkerKey.keyStartByte) as number | undefined
       const resumeETag = taskWorkerData.get(TaskWorkerKey.keyETag) as string | undefined
@@ -411,7 +420,9 @@ workerPort.onmessage = async (event: MessageEvents) => {
       worker.eTag = resumeETag
       const prefOptions: preferences.Options = { name: 'DEFAULT' }
       worker.prefs = preferences.getPreferencesSync(uiContext, prefOptions)
+      console.error("startWork: about to call startDoTask");
       await worker.startDoTask();
+      console.error("startWork: startDoTask returned");
     }
       break;
     default:
@@ -426,4 +437,5 @@ workerPort.onmessageerror = () => {
 workerPort.onerror = (err: ErrorEvent) => {
   console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onerror for DownloadTaskWorker:', err.message)
 }
+
 

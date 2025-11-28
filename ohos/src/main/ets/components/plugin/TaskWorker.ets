@@ -20,6 +20,53 @@ import { Auth} from './Auth'
 import { http } from '@kit.NetworkKit'
 import preferences from '@ohos.data.preferences'
 
+interface PlainAuthJson {
+  accessToken?: string;
+  accessHeaders?: Record<string, string>;
+  accessQueryParams?: Record<string, string>;
+  accessTokenExpiryTime?: number;
+  refreshToken?: string;
+  refreshHeaders?: Record<string, string>;
+  refreshQueryParams?: Record<string, string>;
+  refreshUrl?: string;
+  onAuthRawHandle?: number;
+}
+
+interface PlainTaskOptionsJson {
+  beforeTaskStartRawHandle?: number;
+  onTaskStartRawHandle?: number;
+  onTaskFinishedRawHandle?: number;
+  auth?: PlainAuthJson;
+}
+
+interface PlainTaskJson {
+  taskId: string;
+  url: string;
+  filename: string;
+  headers: Record<string, string>;
+  baseDirectory: string;
+  group: string;
+  updates: number;
+  taskType: string;
+  urls: Array<string>;
+  httpRequestMethod: string;
+  chunks: number;
+  post?: string;
+  fileField: string;
+  mimeType: string;
+  fields: Record<string, string>;
+  directory: string;
+  requiresWiFi: boolean;
+  retries: number;
+  retriesRemaining: number;
+  allowPause: boolean;
+  priority: number;
+  metaData: string;
+  displayName: string;
+  creationTime: number;
+  options?: PlainTaskOptionsJson;
+}
+
 
 export enum TaskWorkerKey {
   keyNotificationConfig = "notificationConfig",
@@ -44,7 +91,85 @@ export class TaskWorker {
   //
   public static taskToJsonString(task: Task): string {
     console.error(BDPlugin.TAG+"enter taskToJsonString");
-    return JSON.stringify(task);
+    const headers: Record<string, string> = {};
+    task.headers.forEach((value, key) => {
+      if (value !== undefined && value !== null) {
+        headers[key] = `${value}`;
+      }
+      console.error("taskToJsonString:"+"key:"+key+"value:" + value);
+    });
+    const fields: Record<string, string> = {};
+    task.fields.forEach((value, key) => {
+      if (value !== undefined && value !== null) {
+        fields[key] = `${value}`;
+      }
+    });
+    const mapToRecordFromMap = (map?: collections.Map<string, string>): Record<string, string> => {
+      const result: Record<string, string> = {};
+      map?.forEach((v, k) => {
+        if (v !== undefined && v !== null) {
+          result[k] = `${v}`;
+        }
+      });
+      return result;
+    };
+    const urls: Array<string> = [];
+    task.urls.forEach((value) => {
+      if (value !== undefined && value !== null) {
+        urls.push(`${value}`);
+      }
+    });
+
+    const plain: PlainTaskJson = {
+      taskId: task.taskId,
+      url: task.url,
+      filename: task.filename,
+      headers,
+      baseDirectory: task.baseDirectory,
+      group: task.group,
+      updates: task.updates,
+      taskType: task.taskType,
+      urls,
+      httpRequestMethod: task.httpRequestMethod,
+      chunks: task.chunks,
+      post: task.post,
+      fileField: task.fileField,
+      mimeType: task.mimeType,
+      fields,
+      directory: task.directory,
+      requiresWiFi: task.requiresWiFi,
+      retries: task.retries,
+      retriesRemaining: task.retriesRemaining,
+      allowPause: task.allowPause,
+      priority: task.priority,
+      metaData: task.metaData,
+      displayName: task.displayName,
+      creationTime: task.creationTime,
+      options: task.options
+        ? {
+            beforeTaskStartRawHandle: task.options.beforeTaskStartRawHandle,
+            onTaskStartRawHandle: task.options.onTaskStartRawHandle,
+            onTaskFinishedRawHandle: task.options.onTaskFinishedRawHandle,
+            auth: task.options.auth
+              ? {
+                  accessToken: task.options.auth.accessToken,
+                  accessHeaders: mapToRecordFromMap(task.options.auth.accessHeaders),
+                  accessQueryParams: mapToRecordFromMap(task.options.auth.accessQueryParams),
+                  accessTokenExpiryTime: task.options.auth.accessTokenExpiryTime,
+                  refreshToken: task.options.auth.refreshToken,
+                  refreshHeaders: mapToRecordFromMap(task.options.auth.refreshHeaders),
+                  refreshQueryParams: mapToRecordFromMap(task.options.auth.refreshQueryParams),
+                  refreshUrl: task.options.auth.refreshUrl,
+                  onAuthRawHandle: task.options.auth.onAuthRawHandle,
+                }
+              : undefined,
+          }
+        : undefined,
+    };
+
+    const json = JSON.stringify(plain);
+    console.error(BDPlugin.TAG+"JSON.stringify(task) is "+json);
+    return json;
   }
 //
   public static async postOnBackgroundChannel(
@@ -53,7 +178,7 @@ export class TaskWorker {
     let bgPost = new BackgroundPost(task, method, arg, onFail)
     return QueueService.postOnBackgroundChannel(bgPost)
   }
-//
+  //
   /**
    * Processes a progress update for the [task]
    *
@@ -115,10 +240,10 @@ export class TaskWorker {
         // unsuccessful post, so store in local prefs
         console.error(BDPlugin.TAG+"Could not post resume data -> storing locally");
         TaskWorker.storeLocally(
-        BDPlugin.keyResumeDataMap,
-        resumeData.task.taskId,
-        JSON.stringify(resumeData),
-        prefs,
+          BDPlugin.keyResumeDataMap,
+          resumeData.task.taskId,
+          JSON.stringify(resumeData),
+          prefs,
         )
       })
   }
@@ -226,7 +351,7 @@ export class TaskWorker {
 
     return undefined;
   }
-//   main thread
+  //   main thread
   public static async processStatusUpdate(
     task: Task,
     status: TaskStatus,
@@ -486,12 +611,11 @@ export class TaskWorker {
       })
       if (shouldLogProxyMessage) {
         if(useProxy) {
-          console.info("Using proxy:" + proxyAddress + ":"+proxyPort+"for all tasks");
+          console.error("Using proxy:" + proxyAddress + ":"+proxyPort+"for all tasks");
         } else {
-          console.info(BDPlugin.TAG+"Not using proxy for any task")
+          console.error(BDPlugin.TAG+"Not using proxy for any task")
         }
       }
-
 
       httpOptions = {
         method: this.task.httpRequestMethod as http.RequestMethod,
@@ -503,17 +627,19 @@ export class TaskWorker {
 
       let header:Record<string,string> = {};
       this.task.headers.forEach((value, key) => {
+        console.error(BDPlugin.TAG+"key:"+key+" value:"+value);
         if (!this.task!.isUploadTask() ||
           (!(key == "Range" || key == 'range') &&
             (!(key == "Content-Disposition" || key == "content-disposition")))) {
-            header[key] = value;
+          header[key] = value;
+          //console.error(BDPlugin.TAG+"key:"+key+" value:"+value);
         }
       });
       return this.connectAndProcess(httpOptions,header);
 
     } catch (err) {
-     console.warn(BDPlugin.TAG+"Error for taskId"+this.task.taskId + err as string)
-     this.setTaskException(err)
+      console.error(BDPlugin.TAG+"Error for taskId"+this.task.taskId + err as string)
+      this.setTaskException(err)
     }
 
     return TaskStatus.failed;
@@ -539,8 +665,8 @@ export class TaskWorker {
         let result = encoder.encodeInto(this.task.post);
 
 
-       httpOptions.extraData = result;
-       httpOptions.method = http.RequestMethod.POST;
+        httpOptions.extraData = result;
+        httpOptions.method = http.RequestMethod.POST;
 
 
       }
@@ -658,13 +784,13 @@ export class TaskWorker {
   static keyTasksMap = "com.bbflight.background_downloader.taskMap.v2"
 
   public workerParams?:collections.Map<string, string | number|boolean | ResumeData | undefined>
-//
+  //
   constructor(applicationContext ?: common.UIAbilityContext,workerParams?:collections.Map<string, string | number | boolean | ResumeData | undefined>) {
     //constructor(applicationContext?:common.UIAbilityContext,workerParams?:Map<string,ESObject>) {
     this.applicationContext = applicationContext
     this.workerParams = workerParams
   }
-//
+  //
 }
 
 

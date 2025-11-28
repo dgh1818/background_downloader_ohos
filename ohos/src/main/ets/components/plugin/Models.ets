@@ -38,7 +38,7 @@ export interface Task_interface {
   url?: string;
   urls?: collections.Array<string>;
   filename?: string;
-  headers?: collections.Map<string,string>;
+  headers?: collections.Map<string,string> | Record<string, string>;
   httpRequestMethod?: string;
   chunks?: number;
   post?: string;
@@ -101,7 +101,25 @@ export class Task {
     this.taskId = init?.taskId || Math.floor(Math.random() * 1000000).toString();
     this.url = init?.url || "";
     this.filename = init?.filename || "";
-    this.headers = init?.headers instanceof collections.Map? init?.headers : new collections.Map<string,string>();
+    const headersMap = new collections.Map<string, string>();
+    const headersInput = init?.headers;
+    if (headersInput instanceof collections.Map) {
+      headersInput.forEach((v, k) => {
+        if (v !== undefined && v !== null) {
+          headersMap.set(k, v);
+        }
+      });
+    } else if (headersInput) {
+      const entries = Object.entries(headersInput as Record<string, string>);
+      for (let i = 0; i < entries.length; i++) {
+        const key = entries[i][0];
+        const value = entries[i][1];
+        if (value !== undefined && value !== null) {
+          headersMap.set(key, `${value}`);
+        }
+      }
+    }
+    this.headers = headersMap;
     this.baseDirectory = init?.baseDirectory || "";
     this.group = init?.group || "";
     this.updates = init?.updates??Updates.none;
@@ -112,7 +130,25 @@ export class Task {
     this.post = init?.post;
     this.fileField = init?.fileField || "";
     this.mimeType = init?.mimeType || "";
-    this.fields = init?.fields instanceof collections.Map?init?.fields : new collections.Map<string,string>();
+    const fieldsMap = new collections.Map<string, string>();
+    const fieldsInput = init?.fields;
+    if (fieldsInput instanceof collections.Map) {
+      fieldsInput.forEach((v, k) => {
+        if (v !== undefined && v !== null) {
+          fieldsMap.set(k, v);
+        }
+      });
+    } else if (fieldsInput) {
+      const fieldEntries = Object.entries(fieldsInput as Record<string, string>);
+      for (let i = 0; i < fieldEntries.length; i++) {
+        const key = fieldEntries[i][0];
+        const value = fieldEntries[i][1];
+        if (value !== undefined && value !== null) {
+          fieldsMap.set(key, `${value}`);
+        }
+      }
+    }
+    this.fields = fieldsMap;
     this.directory = init?.directory || "";
     this.requiresWiFi = init?.requiresWiFi || false;
     this.retries = init?.retries || 0;
