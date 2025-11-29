@@ -6,6 +6,8 @@ import { BaseDirectory, Task } from "./Models";
 import { TaskWorker } from "./TaskWorker";
 import { preferences } from "@kit.ArkData";
 import BDPlugin from "./BDPlugin";
+import { PathUtils } from "@ohos/flutter_ohos";
+
 /**
  * Parses the range in a Range header, and returns a Pair representing
  * the range. The format needs to be "bytes=10-20"
@@ -154,8 +156,10 @@ export function baseDirPath(context: common.UIAbilityContext, baseDirectory: Bas
     return undefined;
   }
 
-  const filesDir = context.filesDir;
-  const cacheDir = context.cacheDir;
+  const filesDir = PathUtils.getFilesDir(context.getApplicationContext()) + '/flutter';
+  console.error("filesDir is:" + filesDir);
+  //const filesDir = context.filesDir;
+  const cacheDir = context.getApplicationContext().cacheDir;
 
   if (!filesDir || !cacheDir) {
     console.error(`${BDPlugin.TAG}: Could not resolve internal storage directories`);

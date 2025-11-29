@@ -44,7 +44,7 @@ interface PlainTaskJson {
   url: string;
   filename: string;
   headers: Record<string, string>;
-  baseDirectory: string;
+  baseDirectory: number;
   group: string;
   updates: number;
   taskType: string;
@@ -147,23 +147,23 @@ export class TaskWorker {
       creationTime: task.creationTime,
       options: task.options
         ? {
-            beforeTaskStartRawHandle: task.options.beforeTaskStartRawHandle,
-            onTaskStartRawHandle: task.options.onTaskStartRawHandle,
-            onTaskFinishedRawHandle: task.options.onTaskFinishedRawHandle,
-            auth: task.options.auth
-              ? {
-                  accessToken: task.options.auth.accessToken,
-                  accessHeaders: mapToRecordFromMap(task.options.auth.accessHeaders),
-                  accessQueryParams: mapToRecordFromMap(task.options.auth.accessQueryParams),
-                  accessTokenExpiryTime: task.options.auth.accessTokenExpiryTime,
-                  refreshToken: task.options.auth.refreshToken,
-                  refreshHeaders: mapToRecordFromMap(task.options.auth.refreshHeaders),
-                  refreshQueryParams: mapToRecordFromMap(task.options.auth.refreshQueryParams),
-                  refreshUrl: task.options.auth.refreshUrl,
-                  onAuthRawHandle: task.options.auth.onAuthRawHandle,
-                }
-              : undefined,
-          }
+          beforeTaskStartRawHandle: task.options.beforeTaskStartRawHandle,
+          onTaskStartRawHandle: task.options.onTaskStartRawHandle,
+          onTaskFinishedRawHandle: task.options.onTaskFinishedRawHandle,
+          auth: task.options.auth
+            ? {
+              accessToken: task.options.auth.accessToken,
+              accessHeaders: mapToRecordFromMap(task.options.auth.accessHeaders),
+              accessQueryParams: mapToRecordFromMap(task.options.auth.accessQueryParams),
+              accessTokenExpiryTime: task.options.auth.accessTokenExpiryTime,
+              refreshToken: task.options.auth.refreshToken,
+              refreshHeaders: mapToRecordFromMap(task.options.auth.refreshHeaders),
+              refreshQueryParams: mapToRecordFromMap(task.options.auth.refreshQueryParams),
+              refreshUrl: task.options.auth.refreshUrl,
+              onAuthRawHandle: task.options.auth.onAuthRawHandle,
+            }
+            : undefined,
+        }
         : undefined,
     };
 
@@ -171,7 +171,7 @@ export class TaskWorker {
     console.error(BDPlugin.TAG+"JSON.stringify(task) is "+json);
     return json;
   }
-//
+  //
   public static async postOnBackgroundChannel(
     method: string, task: Task, arg: (string | number | Map<string, string> |boolean| undefined)[], onFail?: () => Promise<void>
   ): Promise<void> {

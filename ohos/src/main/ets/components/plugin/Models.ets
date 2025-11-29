@@ -3,6 +3,7 @@ import { ArrayList, collections, lang, uri, url } from '@kit.ArkTS';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { suggestFilename } from './Helper';
+import { PathUtils } from '@ohos/flutter_ohos';
 
 @Sendable
 export class TaskOptions {
@@ -46,7 +47,7 @@ export interface Task_interface {
   mimeType?: string;
   fields?: collections.Map<string,string>;
   directory?: string;
-  baseDirectory?: string;
+  baseDirectory?: number;
   group?: string;
   updates?: number;
   requiresWiFi?: boolean;
@@ -60,6 +61,7 @@ export interface Task_interface {
   options?: TaskOptions;
   taskType?: string;
 }
+
 
 export enum BaseDirectory {
   applicationDocuments,
@@ -75,7 +77,7 @@ export class Task {
   url: string;
   filename: string;
   headers: collections.Map<string,string>;
-  baseDirectory: string;
+  baseDirectory: number;
   group: string;
   updates: number;
   taskType: string;
@@ -120,16 +122,16 @@ export class Task {
       }
     }
     this.headers = headersMap;
-    this.baseDirectory = init?.baseDirectory || "";
-    this.group = init?.group || "";
+    this.baseDirectory = init?.baseDirectory ?? -2;
+    this.group = init?.group ?? "";
     this.updates = init?.updates??Updates.none;
-    this.taskType = init?.taskType || "";
+    this.taskType = init?.taskType ?? "";
     this.urls = init?.urls instanceof collections.Array? init?.urls : new collections.Array<string>();
-    this.httpRequestMethod = init?.httpRequestMethod || "GET";
-    this.chunks = init?.chunks || 1;
+    this.httpRequestMethod = init?.httpRequestMethod ?? "GET";
+    this.chunks = init?.chunks ?? 1;
     this.post = init?.post;
-    this.fileField = init?.fileField || "";
-    this.mimeType = init?.mimeType || "";
+    this.fileField = init?.fileField ?? "";
+    this.mimeType = init?.mimeType ?? "";
     const fieldsMap = new collections.Map<string, string>();
     const fieldsInput = init?.fields;
     if (fieldsInput instanceof collections.Map) {
@@ -149,15 +151,15 @@ export class Task {
       }
     }
     this.fields = fieldsMap;
-    this.directory = init?.directory || "";
-    this.requiresWiFi = init?.requiresWiFi || false;
-    this.retries = init?.retries || 0;
-    this.retriesRemaining = init?.retriesRemaining || 0;
-    this.allowPause = init?.allowPause || false;
-    this.priority = init?.priority || 5;
-    this.metaData = init?.metaData || "";
-    this.displayName = init?.displayName || "";
-    this.creationTime = init?.creationTime || Date.now();
+    this.directory = init?.directory ?? "";
+    this.requiresWiFi = init?.requiresWiFi ?? false;
+    this.retries = init?.retries ?? 0;
+    this.retriesRemaining = init?.retriesRemaining ?? 0;
+    this.allowPause = init?.allowPause ?? false;
+    this.priority = init?.priority ?? 5;
+    this.metaData = init?.metaData ?? "";
+    this.displayName = init?.displayName ?? "";
+    this.creationTime = init?.creationTime ?? Date.now();
     if(init?.options instanceof TaskOptions) {
       this.options = init.options
     }
@@ -165,31 +167,31 @@ export class Task {
 
   copyWith(params?: Task_interface): Task {
     return new Task({
-      taskId: params?.taskId || this.taskId,
-      url: params?.url || this.url,
-      filename: params?.filename || this.filename,
-      headers: params?.headers || this.headers,
-      baseDirectory: params?.baseDirectory || this.baseDirectory,
-      group: params?.group || this.group,
-      updates: params?.updates || this.updates,
-      taskType: params?.taskType || this.taskType,
-      urls: params?.urls || this.urls,
-      httpRequestMethod: params?.httpRequestMethod || this.httpRequestMethod,
-      chunks: params?.chunks || this.chunks,
-      post: params?.post || this.post,
-      fileField: params?.fileField || this.fileField,
-      mimeType: params?.mimeType || this.mimeType,
-      fields: params?.fields || this.fields,
-      directory: params?.directory || this.directory,
-      requiresWiFi: params?.requiresWiFi || this.requiresWiFi,
-      retries: params?.retries || this.retries,
-      retriesRemaining: params?.retriesRemaining || this.retriesRemaining,
-      allowPause: params?.allowPause || this.allowPause,
-      priority: params?.priority || this.priority,
-      metaData: params?.metaData || this.metaData,
-      displayName: params?.displayName || this.displayName,
-      creationTime: params?.creationTime || this.creationTime,
-      options: params?.options || this.options,
+      taskId: params?.taskId ?? this.taskId,
+      url: params?.url ?? this.url,
+      filename: params?.filename ?? this.filename,
+      headers: params?.headers ?? this.headers,
+      baseDirectory: params?.baseDirectory ?? this.baseDirectory,
+      group: params?.group ?? this.group,
+      updates: params?.updates ?? this.updates,
+      taskType: params?.taskType ?? this.taskType,
+      urls: params?.urls ?? this.urls,
+      httpRequestMethod: params?.httpRequestMethod ?? this.httpRequestMethod,
+      chunks: params?.chunks ?? this.chunks,
+      post: params?.post ?? this.post,
+      fileField: params?.fileField ?? this.fileField,
+      mimeType: params?.mimeType ?? this.mimeType,
+      fields: params?.fields ?? this.fields,
+      directory: params?.directory ?? this.directory,
+      requiresWiFi: params?.requiresWiFi ?? this.requiresWiFi,
+      retries: params?.retries ?? this.retries,
+      retriesRemaining: params?.retriesRemaining ?? this.retriesRemaining,
+      allowPause: params?.allowPause ?? this.allowPause,
+      priority: params?.priority ?? this.priority,
+      metaData: params?.metaData ?? this.metaData,
+      displayName: params?.displayName ?? this.displayName,
+      creationTime: params?.creationTime ?? this.creationTime,
+      options: params?.options ?? this.options,
     });
   }
 
@@ -272,7 +274,7 @@ export class Task {
   filePath(context: common.UIAbilityContext, withFilename?: string): string {
     if (this.isMultiUploadTask() && withFilename === undefined) return "";
     const filenameToUse = withFilename ?? this.filename;
-    const baseDir = context.filesDir
+    const baseDir = PathUtils.getFilesDir(context.getApplicationContext()) + '/flutter';
     if (baseDir === undefined) {
       throw new Error("External storage is requested but not available");
     }

@@ -11,13 +11,14 @@ import {
 import { TaskWorker, TaskWorkerKey } from '../../../../../../src/main/ets/components/plugin/TaskWorker'
 import { http } from '@kit.NetworkKit';
 import { baseDirPath, FileUtils, getContentLength, insufficientSpace, parseRange, suggestFilename } from '../../../../../../src/main/ets/components/plugin/Helper';
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri, picker } from '@kit.CoreFileKit';
 import BDPlugin, {
   WorkerCommand,
   WorkerShareableData } from '../../../../../../src/main/ets/components/plugin/BDPlugin';
 import { collections, ErrorEvent, MessageEvents, ThreadWorkerGlobalScope, uri, util, worker } from '@kit.ArkTS';
 import { preferences } from '@kit.ArkData';
 import { NotificationConfig } from '../../../../../../src/main/ets/components/plugin/Notifications';
+import { BusinessError } from '@kit.BasicServicesKit';
 
 class DownloadTaskWorker extends TaskWorker {
   constructor(applicationContext: common.UIAbilityContext,
@@ -33,7 +34,7 @@ class DownloadTaskWorker extends TaskWorker {
   public taskRangeStartByte = 0 // Start of the Task's download range
   public eTag?: string
 
-    public async startDoTask() {
+  public async startDoTask() {
     console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "startDoTask begin");
     const result = await this.doTask();
     console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "startDoTask done with status", result);
@@ -276,6 +277,7 @@ class DownloadTaskWorker extends TaskWorker {
           const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
           fs.writeSync(outputStream.fd, buffer)
           fs.closeSync(outputStream)
+
           console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "writeSync ok, closed outputStream");
         }
       } catch (e) {
@@ -287,6 +289,7 @@ class DownloadTaskWorker extends TaskWorker {
         case TaskStatus.complete:
           if (tempFile) {
             fs.copyFileSync(tempFile, destFilePath)
+            await this.saveFileToDownloads(tempFile,this.task.filename);
           }
           return TaskStatus.complete
         case TaskStatus.canceled as number:
@@ -366,6 +369,46 @@ class DownloadTaskWorker extends TaskWorker {
       return TaskStatus.failed
     }
   }
+
+  async saveFileToDownloads(source:string,filename:string) {
+    const documentViewPicker = new picker.DocumentViewPicker(this.applicationContext!);
+    // 创建保存选项并配置为下载模式（直接保存到下载目录，无需用户选择）
+    const documentSaveOptions = new picker.DocumentSaveOptions();
+    documentSaveOptions.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
+    let uri: string = '';
+
+    await documentViewPicker.save(documentSaveOptions)
+      .then(async (documentSaveResult: Array<string>) => {
+        // 成功获取下载目录URI
+        uri = documentSaveResult[0];
+        console.info('获取下载目录成功，URI：' + uri);
+
+        // 构建要创建的文件路径（在下载目录下）
+        const testFilePath01 = new fileUri.FileUri(uri + '/' + filename).path; // 图片文件路径
+
+        // 同步创建并打开文件（权限：创建+读写）
+        const file01 = fs.openSync(testFilePath01, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+
+        // 同步关闭文件（释放资源）
+
+        const stat = await fs.stat(source)
+        const file = await fs.openSync(source,fs.OpenMode.READ_WRITE);
+        const buf = new ArrayBuffer(stat.size);
+        await fs.readSync(file.fd, buf);
+        await fs.close(file);
+        console.error("close source file success")
+
+        fs.writeSync(file01.fd, buf);
+        fs.closeSync(file01);
+        //fs.copyFileSync(source, testFilePath01);
+        // 显示保存成功提示
+        //this.showDialog('文件保存成功');
+      })
+      .catch((err: BusinessError) => {
+        // 操作失败：打印错误信息
+        console.error(`下载目录文件保存失败，错误码：${err.code}，错误信息：${err.message}`);
+      })
+  }
 }
 
 type WorkerParamValue = string | number | boolean | sendableContextManager.SendableContext
@@ -429,7 +472,15 @@ workerPort.onmessage = async (event: MessageEvents) => {
       const prefOptions: preferences.Options = { name: 'DEFAULT' }
       worker.prefs = preferences.getPreferencesSync(uiContext, prefOptions)
       console.error("startWork: about to call startDoTask");
-      await worker.startDoTask();
+      let status = await worker.startDoTask();
+      workerPort.postMessage({
+        command: "statusUpdate",
+        status: status,
+        taskJson: TaskWorker.taskToJsonString(worker.task!),
+        exception: worker.taskException,
+        responseBody: worker.responseBody,
+        responseStatusCode: worker.responseStatusCode,
+      });
       console.error("startWork: startDoTask returned");
     }
       break;
