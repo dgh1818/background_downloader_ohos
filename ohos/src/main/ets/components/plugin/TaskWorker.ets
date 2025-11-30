@@ -90,13 +90,11 @@ export class TaskWorker {
   static workerShareableData? :WorkerShareableData;
   //
   public static taskToJsonString(task: Task): string {
-    console.error(BDPlugin.TAG+"enter taskToJsonString");
     const headers: Record<string, string> = {};
     task.headers.forEach((value, key) => {
       if (value !== undefined && value !== null) {
         headers[key] = `${value}`;
       }
-      console.error("taskToJsonString:"+"key:"+key+"value:" + value);
     });
     const fields: Record<string, string> = {};
     task.fields.forEach((value, key) => {
@@ -168,7 +166,6 @@ export class TaskWorker {
     };
 
     const json = JSON.stringify(plain);
-    console.error(BDPlugin.TAG+"JSON.stringify(task) is "+json);
     return json;
   }
   //

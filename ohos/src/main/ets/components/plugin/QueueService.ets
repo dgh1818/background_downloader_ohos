@@ -161,7 +161,7 @@ export class QueueService {
 
   private static async dispatchBackgroundPost(bgPost: BackgroundPost): Promise<void> {
     const channel = BDPlugin.bgChannelByTaskId.get(bgPost.task.taskId)
-      ?? BDPlugin.methodbackgroundChannel(undefined, bgPost.task.taskId)
+      ?? BDPlugin.backgroundChannel
       ?? BDPlugin.firstBackgroundChannel;
     if (!channel) {
       console.info(TaskWorker.TAG, `Could not post ${bgPost.method} to background channel`);
@@ -170,8 +170,6 @@ export class QueueService {
       }
       return;
     }
-
-    console.error("enter const argList: Object[] = [TaskWorker.taskToJsonString(bgPost.task)];");
 
     const argList: Object[] = [TaskWorker.taskToJsonString(bgPost.task)];
     if (Array.isArray(bgPost.arg)) {
@@ -184,6 +182,10 @@ export class QueueService {
     try {
       channel.invokeMethod(bgPost.method, argList);
       completer.resolve(true);
+      console.error(
+        TaskWorker.TAG,
+        ` trying to post ${bgPost.method} to background channel`
+      );
     } catch (error) {
       console.error(
         TaskWorker.TAG,

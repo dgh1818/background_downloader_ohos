@@ -1,4 +1,4 @@
-import { common, sendableContextManager } from '@kit.AbilityKit'
+﻿import { common, sendableContextManager } from '@kit.AbilityKit'
 import {
   BaseDirectory,
   ExceptionType,
@@ -157,257 +157,304 @@ class DownloadTaskWorker extends TaskWorker {
 
   override async process(httpOptions: http.HttpRequestOptions, header: Record<string, string>): Promise<TaskStatus> {
     if (!this.task) {
-      return TaskStatus.failed
+      return TaskStatus.failed;
     }
-    const httpRequest = http.createHttp()
-    let response: http.HttpResponse | undefined
-    try {
-      httpOptions.header = header;
-      response = await httpRequest.request(this.task.url, httpOptions);
-    } catch (e) {
-      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http request threw", e);
-      this.setTaskException(e as string)
-      return TaskStatus.failed
+    if (!this.prefs && this.applicationContext) {
+      const prefOptions: preferences.Options = { name: "DEFAULT" };
+      this.prefs = preferences.getPreferencesSync(this.applicationContext, prefOptions);
     }
-    console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http response code", response.responseCode, "url", this.task.url);
-    this.responseStatusCode = response.responseCode
-    const headerMap = new Map<string, string>()
-    Object.keys(response.header ?? {}).forEach(key => {
-      const lowerKey = key.toLowerCase()
-      const value = (response!.header as Record<string, string>)[key]
-      headerMap.set(lowerKey, value)
-    })
-    if (response.responseCode >= 200 && response.responseCode <= 206) {
-      const directoryUri = this.task.directory?.length ? new uri.URI(this.task.directory) : undefined
-      const usesUri = directoryUri != undefined
-      this.eTagHeader = headerMap.get("etag") ?? undefined
-      const acceptRangesHeader = headerMap.get("accept-ranges")
-      this.serverAcceptsRanges = acceptRangesHeader == "bytes" || response.responseCode == 206
-      if (this.task.allowPause && !usesUri) {
-        this.taskCanResume = this.serverAcceptsRanges
-        super.processCanResume(this.task, this.taskCanResume)
-      }
-      this.isResume = this.isResume && response.responseCode == 206
-      if (this.isResume) {
-        this.taskRangeStartByte = parseRange(this.task.headers.get("Range") ?? "")[0]
-        if (!this.prepareResume(headerMap)) {
-          this.deleteTempFile()
-          return TaskStatus.failed
-        }
-        if (this.eTagHeader != this.eTag || (this.eTag && this.eTag.startsWith("W/"))) {
-          this.deleteTempFile()
-          this.taskException = new TaskException(ExceptionType.resume, undefined,
-            "Cannot resume: ETag is not identical, or is weak")
-          return TaskStatus.failed
-        }
-      }
 
-      if (this.applicationContext == undefined) {
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag + this.applicationContext + DownloadTaskWorker.DownloadTaskWorkerTag + "is undefined")
-        return TaskStatus.failed;
-      }
-      let destFilePath = this.task.filePath(this.applicationContext!);
-      let destUriString = this.task.filename
-      if (!this.task.hasFilename()) {
-        if (usesUri) {
-          destUriString = suggestFilename(headerMap, this.task.url)
-          if (destUriString.length == 0) {
-            destUriString = Math.floor(Math.random() * 1000000000).toString()
-          }
-          this.task = this.task.copyWith({ filename: destUriString })
-        } else {
-          destFilePath = this.destFilePath(headerMap)
-        }
-      }
-      super.extractResponseHeaders(headerMap)
-      super.extractContentType(headerMap)
-      const contentLength = getContentLength(headerMap, this.task)
-      let tempFile: string | undefined
-      if (!usesUri) {
-        const prefOptions: preferences.Options = { name: "DEFAULT" }
-        const prefs = preferences.getPreferencesSync(this.applicationContext!, prefOptions)
-        const applicationSupportPath = baseDirPath(this.applicationContext!, BaseDirectory.applicationSupport)
-        const cachePath = baseDirPath(this.applicationContext!, BaseDirectory.temporary)
-        if (!applicationSupportPath || !cachePath) {
-          this.taskException = new TaskException(ExceptionType.fileSystem, undefined,
-            "External storage is requested but not available")
-          return TaskStatus.failed
-        }
-        const configUseCacheDir = prefs.getSync(BDPlugin.keyConfigUseCacheDir, -2) as number
-        const tempDir =
-          configUseCacheDir == 0 ? cachePath : (configUseCacheDir == -1 ? applicationSupportPath : cachePath)
+    const httpRequest = http.createHttp();
+    const task = this.task;
+
+    return await new Promise<TaskStatus>(async (resolve) => {
+      let headerMap = new Map<string, string>();
+      let destFilePath = "";
+      let tempFile: string | undefined;
+      let outputStream: fs.File | undefined;
+      let contentLength = -1;
+      let usesUri = false;
+      let prepared = false;
+      let dataReceived = false;
+      let responseCode = 0;
+
+      const cleanup = (status: TaskStatus) => {
         try {
-          fs.accessSync(tempDir)
+          if (outputStream) {
+            fs.closeSync(outputStream);
+          }
         } catch (_) {
-          fs.mkdirSync(tempDir)
         }
-        if (this.tempFilePath.length == 0) {
-          this.tempFilePath = `${tempDir}/com.bbflight.background_downloader${Math.floor(Math.random() * 1000000000)}`
-        }
-        if (insufficientSpace(this.applicationContext!, contentLength)) {
-          this.taskException = new TaskException(ExceptionType.fileSystem, undefined,
-            "Insufficient space to store the file to be downloaded")
-          return TaskStatus.failed
-        }
-        tempFile = this.tempFilePath
-      }
-      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "destFilePath", destFilePath, "tempFile", tempFile, "contentLength", contentLength);
-      let outputStream: fs.File | undefined
-      if (tempFile) {
-        const openMode = this.isResume
-          ? fs.OpenMode.READ_WRITE | fs.OpenMode.APPEND
-          : fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE
-        outputStream = fs.openSync(tempFile, openMode)
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "opened tempFile", tempFile, "openMode", openMode)
-      } else {
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "no tempFile, usesUri flow");
-      }
-      //BDPlugin.remainingBytesToDownload.set(this.task.taskId, contentLength)
-      super.determineRunInForeground(this.task, contentLength)
-      let transferResult: TaskStatus = TaskStatus.failed
-      try {
-        const dataToWrite = typeof response.result === 'string'
-          ? new util.TextEncoder().encodeInto(response.result as string)
-          : (response.result as ArrayBuffer ?? new ArrayBuffer(0))
-        const bytes = dataToWrite instanceof ArrayBuffer ? new Uint8Array(dataToWrite) : dataToWrite
-        this.bytesTotal += bytes.byteLength
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "about to write bytes", bytes.byteLength, "result type", typeof response.result);
-        transferResult = TaskStatus.complete
-        if (outputStream) {
-          const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-          fs.writeSync(outputStream.fd, buffer)
-          fs.closeSync(outputStream)
+        resolve(status);
+      };
 
-          console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "writeSync ok, closed outputStream");
-        }
-      } catch (e) {
-        this.setTaskException(e as ESObject)
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write failed", (e as Error).message ?? e);
-        transferResult = TaskStatus.failed
-      }
-      switch (transferResult as number) {
-        case TaskStatus.complete:
+      httpRequest.on("headersReceive", (headerObj: Object) => {
+        console.error("header is"+ JSON.stringify(headerObj));
+        try {
+          const respHeader = headerObj as Record<string, string> | undefined;
+          if (respHeader) {
+            const headerKeys = Object.keys(respHeader);
+            console.error(
+              DownloadTaskWorker.DownloadTaskWorkerTag,
+              "headersReceive, header keys:",
+              headerKeys.join(",")
+            );
+            headerKeys.forEach((key) => {
+              const lowerKey = key.toLowerCase();
+              const value = respHeader[key];
+              headerMap.set(lowerKey, value);
+            });
+          } else {
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "headersReceive, no headers present");
+          }
+
+          // headersReceive parses headers only; status code handled after request returns
+          console.error(
+            DownloadTaskWorker.DownloadTaskWorkerTag,
+            "status 2xx, url",
+            task.url,
+            "contentLength header",
+            headerMap.get("content-length"),
+            "usesUri",
+            usesUri
+          );
+
+          const directoryUri = task.directory?.length ? new uri.URI(task.directory) : undefined;
+          usesUri = directoryUri != undefined;
+          this.eTagHeader = headerMap.get("etag") ?? undefined;
+          const acceptRangesHeader = headerMap.get("accept-ranges");
+          this.serverAcceptsRanges = acceptRangesHeader == "bytes";
+          if (task.allowPause && !usesUri) {
+            this.taskCanResume = this.serverAcceptsRanges;
+            super.processCanResume(task, this.taskCanResume);
+          }
+          // headersReceive parses headers only; status code handled after request returns
+          if (this.isResume) {
+            this.taskRangeStartByte = parseRange(task.headers.get("Range") ?? "")[0];
+            if (!this.prepareResume(headerMap)) {
+              this.deleteTempFile();
+              cleanup(TaskStatus.failed);
+              return;
+            }
+            if (this.eTagHeader != this.eTag || (this.eTag && this.eTag.startsWith("W/"))) {
+              this.deleteTempFile();
+              this.taskException = new TaskException(
+                ExceptionType.resume,
+                undefined,
+                "Cannot resume: ETag is not identical, or is weak"
+              );
+              cleanup(TaskStatus.failed);
+              return;
+            }
+          }
+
+          if (this.applicationContext == undefined) {
+            console.error(
+              DownloadTaskWorker.DownloadTaskWorkerTag + this.applicationContext + DownloadTaskWorker.DownloadTaskWorkerTag + "is undefined"
+            );
+            cleanup(TaskStatus.failed);
+            return;
+          }
+
+          destFilePath = task.filePath(this.applicationContext);
+          let destUriString = task.filename;
+          if (!task.hasFilename()) {
+            if (usesUri) {
+              destUriString = suggestFilename(headerMap, task.url);
+              if (destUriString.length == 0) {
+                destUriString = Math.floor(Math.random() * 1000000000).toString();
+              }
+              this.task = task.copyWith({ filename: destUriString });
+            } else {
+              destFilePath = this.destFilePath(headerMap);
+            }
+          }
+          super.extractResponseHeaders(headerMap);
+          super.extractContentType(headerMap);
+          contentLength = getContentLength(headerMap, task);
+          console.error("contentLength is"+ contentLength);
+          if (!usesUri) {
+            const prefOptions: preferences.Options = { name: "DEFAULT" };
+            const prefs = preferences.getPreferencesSync(this.applicationContext!, prefOptions);
+            const applicationSupportPath = baseDirPath(this.applicationContext!, BaseDirectory.applicationSupport);
+            const cachePath = baseDirPath(this.applicationContext!, BaseDirectory.temporary);
+            if (!applicationSupportPath || !cachePath) {
+              this.taskException = new TaskException(
+                ExceptionType.fileSystem,
+                undefined,
+                "External storage is requested but not available"
+              );
+              cleanup(TaskStatus.failed);
+              return;
+            }
+            const configUseCacheDir = prefs.getSync(BDPlugin.keyConfigUseCacheDir, -2) as number;
+            const tempDir = configUseCacheDir == 0 ? cachePath : (configUseCacheDir == -1 ? applicationSupportPath : cachePath);
+            try {
+              fs.accessSync(tempDir);
+            } catch (_) {
+              fs.mkdirSync(tempDir);
+            }
+            if (this.tempFilePath.length == 0) {
+              this.tempFilePath = `${tempDir}/com.bbflight.background_downloader${Math.floor(Math.random() * 1000000000)}`;
+            }
+            if (insufficientSpace(this.applicationContext!, contentLength)) {
+              this.taskException = new TaskException(
+                ExceptionType.fileSystem,
+                undefined,
+                "Insufficient space to store the file to be downloaded"
+              );
+              cleanup(TaskStatus.failed);
+              return;
+            }
+            tempFile = this.tempFilePath;
+          }
+          console.error(
+            DownloadTaskWorker.DownloadTaskWorkerTag,
+            "destFilePath",
+            destFilePath,
+            "tempFile",
+            tempFile,
+            "contentLength",
+            contentLength
+          );
           if (tempFile) {
-            fs.copyFileSync(tempFile, destFilePath)
-            await this.saveFileToDownloads(tempFile,this.task.filename);
+            const openMode = this.isResume ? fs.OpenMode.READ_WRITE | fs.OpenMode.APPEND : fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE;
+            outputStream = fs.openSync(tempFile, openMode);
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "opened tempFile", tempFile, "openMode", openMode);
+          } else {
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "no tempFile, usesUri flow");
           }
-          return TaskStatus.complete
-        case TaskStatus.canceled as number:
-          this.deleteTempFile()
-          return TaskStatus.canceled
-        case TaskStatus.paused as number:
-          await TaskWorker.workerShareableData!.withLock(() => {
-            TaskWorker.workerShareableData!.pausedTaskIds.delete(this.task!.taskId);  //share
-          })
-          if (this.taskCanResume) {
-            this.processResumeData(new ResumeData({
-              task: this.task,
-              data: this.tempFilePath,
-              requiredStartByte: this.bytesTotal + this.startByte,
-              eTag: this.eTagHeader
-            }), this.prefs!)
-            return TaskStatus.paused
-          }
+          super.determineRunInForeground(task, contentLength);
+          prepared = true;
+        } catch (e) {
+          this.setTaskException(e as ESObject);
+          cleanup(TaskStatus.failed);
+        }
+      });
 
-          let shouldStoreResumeData = false;
-          await TaskWorker.workerShareableData!.withLock(() => {
-            shouldStoreResumeData = TaskWorker.workerShareableData!.tasksToReEnqueue.has(this.task!) && this.serverAcceptsRanges
-          })
+      httpRequest.on("dataReceive", (chunk: ArrayBuffer) => {
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "dataReceive len", chunk.byteLength, "contentLength", contentLength);
+        if (!prepared || !task) {
+          return;
+        }
+        try {
+          dataReceived = true;
+          const bytes = new Uint8Array(chunk);
+          this.bytesTotal += bytes.byteLength;
+          if (outputStream) {
+            const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            fs.writeSync(outputStream.fd, buffer);
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write chunk bytes", bytes.byteLength, "total", this.bytesTotal);
+          }
+        } catch (e) {
+          this.setTaskException(e as ESObject);
+          cleanup(TaskStatus.failed);
+        }
+      });
 
-          if (shouldStoreResumeData) {
-            const resumeData = new ResumeData({
-              task: this.task,
-              data: this.tempFilePath,
-              requiredStartByte: this.bytesTotal + this.startByte,
-              eTag: this.eTagHeader
-            })
-            await TaskWorker.workerShareableData!.withLock(() => {
-              TaskWorker.workerShareableData!.localResumeData.set(this.task!.taskId, resumeData)
-            })
-            return TaskStatus.paused
+      httpRequest.on("dataReceiveProgress", (info: http.DataReceiveProgressInfo) => {
+        const received = info.receiveSize ?? 0;
+        const total = info.totalSize ?? contentLength;
+        this.bytesTotal = Math.max(this.bytesTotal, received);
+        if (total > 0) {
+          workerPort.postMessage({
+            command: "progressUpdate",
+            progress: received / total,
+            expectedFileSize: total,
+            taskJson: TaskWorker.taskToJsonString(task!),
+            downloadSpeed: -1.0,
+            timeRemaining: -1000
+          });
+        }
+        console.error(
+          DownloadTaskWorker.DownloadTaskWorkerTag,
+          "dataReceiveProgress receivedSize",
+          received,
+          "totalSize",
+          total
+        );
+      });
+
+      httpRequest.on("dataEnd", async () => {
+        if (!prepared) {
+          cleanup(TaskStatus.failed);
+          return;
+        }
+        try {
+          if (outputStream) {
+            fs.closeSync(outputStream);
+            outputStream = undefined;
           }
-          this.deleteTempFile()
-          this.taskException = new TaskException(ExceptionType.resume, undefined, "Task was paused but cannot resume")
-          return TaskStatus.failed;
-        case TaskStatus.enqueued as number:
-          if (!this.task.allowPause) {
-            this.taskException = new TaskException(ExceptionType.connection, undefined, "Task timed out")
-            return TaskStatus.failed
+          if (tempFile) {
+            fs.copyFileSync(tempFile, destFilePath);
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "copied tempFile to dest", tempFile, destFilePath);
+            await this.saveFileToDownloads(tempFile, this.task!.filename);
           }
-          if (this.taskCanResume) {
-            let start = this.bytesTotal + this.startByte
-            await BDPlugin.doEnqueue(
-              this.applicationContext!,
-              this.task,
-              this.notificationConfigJsonString,
-              new ResumeData({
-                task: this.task,
-                data: this.tempFilePath,
-                requiredStartByte: start,
-                eTag: this.eTag
-              }),
-              1000
-            )
-            return TaskStatus.paused
+          // push a final progress update to 100% when finished (even if length unknown)
+          workerPort.postMessage({
+            command: "progressUpdate",
+            progress: 1.0,
+            expectedFileSize: contentLength,
+            taskJson: TaskWorker.taskToJsonString(task),
+            downloadSpeed: -1.0,
+            timeRemaining: -1000
+          });
+          cleanup(TaskStatus.complete);
+        } catch (e) {
+          this.setTaskException(e as string);
+          cleanup(TaskStatus.failed);
+        }
+      });
+
+      try {
+        httpOptions.header = header;
+        httpOptions.expectDataType = http.HttpDataType.ARRAY_BUFFER;
+        // Use streaming request and rely on dataReceive/dataEnd callbacks to write incrementally
+        responseCode = await httpRequest.requestInStream(this.task!.url, httpOptions);
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "request finished (stream), responseCode", responseCode);
+
+        // If headersReceive/dataEnd did not finish, fall back to response code
+        if (prepared == false) {
+          const code = responseCode || 0;
+          if (code < 200 || code > 206) {
+            this.taskException = new TaskException(ExceptionType.httpResponse, code, "");
+            cleanup(code == 404 ? TaskStatus.notFound : TaskStatus.failed);
+          } else {
+            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "prepared false but code ok", code);
           }
-          this.taskException = new TaskException(ExceptionType.connection, undefined, "Task timed out")
-          this.deleteTempFile()
-          return TaskStatus.failed;
-        case TaskStatus.failed as number:
-          await this.prepResumeAfterFailure();
-        default:
-          return TaskStatus.failed
+        }
+      } catch (err) {
+        const body = err instanceof Error ? err.message : JSON.stringify(err ?? {});
+        this.setTaskException(err as ESObject);
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "request threw", body);
+        cleanup(TaskStatus.failed);
       }
-    } else {
-      const errorContent = response.result as string
-      this.taskException = new TaskException(ExceptionType.httpResponse, response.responseCode, errorContent)
-      if (response.responseCode == 404) {
-        this.responseBody = errorContent
-        return TaskStatus.notFound
-      }
-      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "http non-2xx, code", response.responseCode, "body", errorContent);
-      return TaskStatus.failed
-    }
+    });
   }
 
   async saveFileToDownloads(source:string,filename:string) {
     const documentViewPicker = new picker.DocumentViewPicker(this.applicationContext!);
-    // 创建保存选项并配置为下载模式（直接保存到下载目录，无需用户选择）
     const documentSaveOptions = new picker.DocumentSaveOptions();
     documentSaveOptions.pickerMode = picker.DocumentPickerMode.DOWNLOAD;
-    let uri: string = '';
-
+    let uri: string = "";
     await documentViewPicker.save(documentSaveOptions)
       .then(async (documentSaveResult: Array<string>) => {
-        // 成功获取下载目录URI
         uri = documentSaveResult[0];
-        console.info('获取下载目录成功，URI：' + uri);
-
-        // 构建要创建的文件路径（在下载目录下）
-        const testFilePath01 = new fileUri.FileUri(uri + '/' + filename).path; // 图片文件路径
-
-        // 同步创建并打开文件（权限：创建+读写）
-        const file01 = fs.openSync(testFilePath01, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
-
-        // 同步关闭文件（释放资源）
-
-        const stat = await fs.stat(source)
-        const file = await fs.openSync(source,fs.OpenMode.READ_WRITE);
+        console.info("Obtained download directory URI: " + uri);
+        const destPath = new fileUri.FileUri(uri + "/" + filename).path;
+        const file01 = fs.openSync(destPath, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE);
+        const stat = await fs.stat(source);
+        const file = await fs.openSync(source, fs.OpenMode.READ_WRITE);
         const buf = new ArrayBuffer(stat.size);
         await fs.readSync(file.fd, buf);
         await fs.close(file);
-        console.error("close source file success")
-
+        console.error("close source file success");
         fs.writeSync(file01.fd, buf);
         fs.closeSync(file01);
-        //fs.copyFileSync(source, testFilePath01);
-        // 显示保存成功提示
-        //this.showDialog('文件保存成功');
       })
       .catch((err: BusinessError) => {
-        // 操作失败：打印错误信息
-        console.error(`下载目录文件保存失败，错误码：${err.code}，错误信息：${err.message}`);
-      })
+        console.error(`Failed to save file to download directory, code: ${err.code}, message: ${err.message}`);
+      });
   }
 }
 
@@ -496,5 +543,8 @@ workerPort.onmessageerror = () => {
 workerPort.onerror = (err: ErrorEvent) => {
   console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onerror for DownloadTaskWorker:', err.message)
 }
+
+
+
 
 
