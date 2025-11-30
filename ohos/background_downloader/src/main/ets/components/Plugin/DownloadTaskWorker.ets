@@ -357,12 +357,15 @@ class DownloadTaskWorker extends TaskWorker {
         const total = info.totalSize ?? contentLength;
         this.bytesTotal = Math.max(this.bytesTotal, received);
         if (total > 0) {
+          const progressValue = Math.min(1.0, Number((received / total).toFixed(6)));
+          // Use a non-integer sentinel for downloadSpeed to keep type as double over the channel
+          //const downloadSpeedValue = this.task?.providesProgressUpdates() ? -1.000001 : -1.000001;
           workerPort.postMessage({
             command: "progressUpdate",
-            progress: received / total,
+            progress: progressValue,
             expectedFileSize: total,
             taskJson: TaskWorker.taskToJsonString(task!),
-            downloadSpeed: -1.0,
+            downloadSpeed: -1.000001,
             timeRemaining: -1000
           });
         }
@@ -389,6 +392,7 @@ class DownloadTaskWorker extends TaskWorker {
             fs.copyFileSync(tempFile, destFilePath);
             console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "copied tempFile to dest", tempFile, destFilePath);
             await this.saveFileToDownloads(tempFile, this.task!.filename);
+            this.deleteTempFile();
           }
           // push a final progress update to 100% when finished (even if length unknown)
           workerPort.postMessage({

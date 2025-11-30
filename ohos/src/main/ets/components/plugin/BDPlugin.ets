@@ -48,7 +48,7 @@ import { workScheduler } from "@kit.BackgroundTasksKit";
 
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
 import { NotificationConfig, NotificationService } from './Notifications'
-import { ResumeData, Task, RequireWiFi, TaskStatus } from "./Models";
+import { ResumeData, Task, RequireWiFi, TaskStatus, TaskException } from "./Models";
 import { getTaskMap, TaskWorker, TaskWorkerKey } from "./TaskWorker";
 import { methodEnqueueAll_task } from "./methodEnqueueAll_task";
 
@@ -242,6 +242,61 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       console.info("Worker出错了：" + err.message);
     }
 
+    downloadTaskWorker.onmessage = async (event: MessageEvents) => {
+      const data = event.data as Record<string, ESObject>;
+      const command = data["command"] as string | undefined;
+      if (!command) {
+        return;
+      }
+      try {
+        const options: preferences.Options = { name: "DEFAULT" };
+        const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
+        switch (command) {
+          case "progressUpdate": {
+            const taskJson = data["taskJson"] as string;
+            const taskFromMsg = Task.fromPlain(JSON.parse(taskJson) as Task);
+            const progress = data["progress"] as number;
+            const expectedFileSize = (data["expectedFileSize"] as number) ?? -1;
+            const downloadSpeed = (data["downloadSpeed"] as number) ?? -1.0;
+            const timeRemaining = (data["timeRemaining"] as number) ?? -1000;
+            await TaskWorker.processProgressUpdate(
+              taskFromMsg,
+              progress,
+              prefs,
+              expectedFileSize,
+              downloadSpeed,
+              timeRemaining
+            );
+            break;
+          }
+          case "statusUpdate": {
+            const taskJson = data["taskJson"] as string;
+            const taskFromMsg = Task.fromPlain(JSON.parse(taskJson) as Task);
+            const status = data["status"] as TaskStatus;
+            const exception = data["exception"] as TaskException | undefined;
+            const responseBody = data["responseBody"] as string | undefined;
+            const responseStatusCode = data["responseStatusCode"] as number | undefined;
+            await TaskWorker.processStatusUpdate(
+              taskFromMsg,
+              status,
+              prefs,
+              BDPlugin.uiContext,
+              exception,
+              responseBody,
+              undefined,
+              responseStatusCode
+            );
+            break;
+          }
+          default:
+            console.error(BDPlugin.TAG, `Unknown worker command ${command}`);
+            break;
+        }
+      } catch (e) {
+        console.error(BDPlugin.TAG, `Error handling worker message ${command}: ${e}`);
+      }
+    };
+
     if (context == undefined) {
       console.error("BDPlugin.sendableUIContext is false")
       return false;
@@ -313,7 +368,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   public static sendableUIContext?: sendableContextManager.SendableContext;
   private prefs?: dataPreferences.Preferences;
   private channel?: MethodChannel
-  private backgroundChannel?: MethodChannel
+  static backgroundChannel?: MethodChannel
   //private applicationContext?: common.ApplicationContext;
   // scope?: CoroutineScope
   private binaryMessenger?: BinaryMessenger
@@ -325,10 +380,10 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
 
     this.binaryMessenger = binding.getBinaryMessenger()
-    this.backgroundChannel =
+    BDPlugin.backgroundChannel =
       new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader.background");
     if (BDPlugin.firstBackgroundChannel == undefined) {
-      BDPlugin.firstBackgroundChannel = this.backgroundChannel;
+      BDPlugin.firstBackgroundChannel = BDPlugin.backgroundChannel;
     }
     this.channel = new MethodChannel(binding.getBinaryMessenger(), "com.bbflight.background_downloader")
     this.channel?.setMethodCallHandler(this)
@@ -356,14 +411,14 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     this.channel = undefined;
 
     BDPlugin.bgChannelByTaskId = new Map(
-      Array.from(BDPlugin.bgChannelByTaskId).filter(entry => entry[1] !== this.backgroundChannel)
+      Array.from(BDPlugin.bgChannelByTaskId).filter(entry => entry[1] !== BDPlugin.backgroundChannel)
     );
 
-    if (BDPlugin.firstBackgroundChannel == this.backgroundChannel) {
+    if (BDPlugin.firstBackgroundChannel == BDPlugin.backgroundChannel) {
       BDPlugin.firstBackgroundChannel = undefined;
     }
 
-    this.backgroundChannel = undefined;
+    BDPlugin.backgroundChannel = undefined;
     this.binaryMessenger = undefined;
   }
 
@@ -466,7 +521,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     plugin: BDPlugin | undefined = undefined,
     taskId: string = "bgd_non_existent_id"
   ): MethodChannel | undefined {
-    return plugin?.backgroundChannel
+    return BDPlugin.backgroundChannel
       ?? BDPlugin.bgChannelByTaskId.get(taskId)
       ?? BDPlugin.firstBackgroundChannel;
   }
