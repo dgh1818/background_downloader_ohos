@@ -150,7 +150,6 @@ export class QueueService {
         BDPlugin.flutterEngineByTaskId.delete(pending.taskId);
         BDPlugin.bgChannelByTaskId.delete(pending.taskId);
         BDPlugin.workerShareableData.localResumeData.delete(pending.taskId);
-        BDPlugin.workerShareableData.notificationConfigJsonStrings.delete(pending.taskId);
       } catch (error) {
         console.error(TAG, 'Error cleaning up task id', error);
       } finally {
@@ -182,10 +181,10 @@ export class QueueService {
     try {
       channel.invokeMethod(bgPost.method, argList);
       completer.resolve(true);
-      console.error(
-        TaskWorker.TAG,
-        ` trying to post ${bgPost.method} to background channel`
-      );
+      // console.error(
+      //   TaskWorker.TAG,
+      //   ` trying to post ${bgPost.method} to background channel`
+      // );
     } catch (error) {
       console.error(
         TaskWorker.TAG,

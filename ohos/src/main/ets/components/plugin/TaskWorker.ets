@@ -10,7 +10,7 @@ import { common, sendableContextManager } from '@kit.AbilityKit'
 import BDPlugin, { WorkerShareableData } from './BDPlugin'
 import { WiFi } from './WIFI'
 import { EnqueueItem, HoldingQueue } from './HoldingQueue'
-import { NotificationConfig } from './Notifications'
+import { NotificationConfig, NotificationService } from './Notifications'
 import { BackgroundPost, QueueService } from './QueueService'
 import { systemDateTime } from '@kit.BasicServicesKit'
 import { TaskStatusUpdate, TaskStatusUpdatePara } from './Models'
@@ -19,6 +19,7 @@ import { Callbacks } from './Callbacks'
 import { Auth} from './Auth'
 import { http } from '@kit.NetworkKit'
 import preferences from '@ohos.data.preferences'
+import { BusinessError } from '@kit.BasicServicesKit';
 
 interface PlainAuthJson {
   accessToken?: string;
@@ -204,6 +205,27 @@ export class TaskWorker {
           )
         }
       )
+    }
+    console.error("enter update notification");
+    // update notification if available
+    try {
+      if (BDPlugin.workerShareableData?.notificationConfigJsonStrings.has(task.taskId)) {
+        // notificationConfig is already set on the active worker instance; here we just trigger update
+        // We cannot access the worker instance, so we rely on UpdateNotificationWorker path
+        await NotificationService.createUpdateNotificationWorker(
+          BDPlugin.uiContext!,
+          TaskWorker.taskToJsonString(task),
+          BDPlugin.workerShareableData.notificationConfigJsonStrings.get(task.taskId),
+          TaskStatus.running.valueOf(),
+          progress
+        );
+      }
+    } catch (err) {
+      let error = err as BusinessError
+      console.error(
+        TaskWorker.TAG,
+        `Exception trying to update notification for taskId ${task.taskId}: ${error.message}`
+      );
     }
   }
 
@@ -492,6 +514,10 @@ export class TaskWorker {
     // remove task from persistent storage, clean up references to taskId
     // and invoke the onTaskFinishedCallback if necessary
     if (isFinal) {
+      // clean notification config cache for this task
+      await TaskWorker.workerShareableData!.withLock(() => {
+        TaskWorker.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
+      });
       if (modifiedStatus == TaskStatus.failed as number) {
         // Cancel the WorkManager job.
         // This is to avoid the WorkManager restarting a job that was
@@ -550,6 +576,18 @@ export class TaskWorker {
           console.error("leave task.options?.hasOnFinishCallback() ")
         }
       }
+    }
+    // update notification for this status change (best-effort)
+    try {
+      if (BDPlugin.workerShareableData?.notificationConfigJsonStrings.has(task.taskId)) {
+        NotificationService.createUpdateNotificationWorker(
+          resolvedContext ?? BDPlugin.uiContext!,
+          TaskWorker.taskToJsonString(task),
+          BDPlugin.workerShareableData.notificationConfigJsonStrings.get(task.taskId),
+          modifiedStatus.valueOf()
+        );
+      }
+    } catch (_) {
     }
   }
 
@@ -815,7 +853,7 @@ export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task
     } catch (e) {
       let error = e as BusinessError;
       console.error("Error deserializing task with id "+taskId+": "+error.message);
-      prefs.setSync(BDPlugin.keyTasksMap, "{}");
+      prefs.putSync(BDPlugin.keyTasksMap, "{}");
       prefs.flushSync();
     }
   });

@@ -43,6 +43,11 @@ class DownloadTaskWorker extends TaskWorker {
   public requiredStartByte = 0 // required start byte within the task range
   public taskRangeStartByte = 0 // Start of the Task's download range
   public eTag?: string
+  // progress throttle
+  private lastProgressPct = -1
+  private lastProgressTime = 0
+  private static readonly progressPctThreshold = 1 // percent
+  private static readonly progressTimeMsThreshold = 500 // ms
 
   public async startDoTask() {
     console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "startDoTask begin");
@@ -378,6 +383,15 @@ class DownloadTaskWorker extends TaskWorker {
         this.bytesTotal = Math.max(this.bytesTotal, received);
         if (total > 0) {
           const progressValue = Math.min(1.0, Number((received / total).toFixed(6)));
+          const progressPct = Math.round(progressValue * 100);
+          const now = Date.now();
+          const pctDelta = this.lastProgressPct >= 0 ? Math.abs(progressPct - this.lastProgressPct) : 100;
+          const timeDelta = now - this.lastProgressTime;
+          if (pctDelta < DownloadTaskWorker.progressPctThreshold && timeDelta < DownloadTaskWorker.progressTimeMsThreshold) {
+            return;
+          }
+          this.lastProgressPct = progressPct;
+          this.lastProgressTime = now;
           // Use a non-integer sentinel for downloadSpeed to keep type as double over the channel
           //const downloadSpeedValue = this.task?.providesProgressUpdates() ? -1.000001 : -1.000001;
           workerPort.postMessage({

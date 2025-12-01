@@ -106,6 +106,7 @@ class UpdateNotificationWorker extends TaskWorker {
     const id = UpdateNotificationWorker.notificationIdForTask(taskWorker.task?.taskId);
 
     const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
+    console.error(BDPlugin.TAG, `UpdateNotificationWorker: progressPct=${progressPct}`);
     const request: notificationManager.NotificationRequest = {
       id: id,
       groupName: "immich",
@@ -150,6 +151,7 @@ class UpdateNotificationWorker extends TaskWorker {
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 workerPort.onmessage = async (event: MessageEvents) => {
   const message = event.data as UpdateNotificationWorkerMessage;
+  console.error(BDPlugin.TAG, `UpdateNotificationWorker: received message with command=${message.command}`);
   if (message.command !== 'update') {
     return;
   }

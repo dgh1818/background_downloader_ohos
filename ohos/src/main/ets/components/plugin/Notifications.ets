@@ -3,7 +3,7 @@ import { common, sendableContextManager } from "@kit.AbilityKit";
 import { TaskWorker } from "./TaskWorker";
 import { ArkTSUtils, MessageEvents, worker } from "@kit.ArkTS";
 //import { UpdateNotificationWorker } from "./UpdateNotificationWorker";
-import { TaskStatus } from "./Models";
+import { Task, TaskStatus } from "./Models";
 import { notificationManager } from '@kit.NotificationKit';
 import { hash } from '@kit.CoreFileKit';
 import BDPlugin from "./BDPlugin";
@@ -121,15 +121,7 @@ export class UpdateNotificationSendableMessage implements UpdateNotificationWork
 }
 
 export class NotificationService {
-  private static updateNotificationWorker?: worker.ThreadWorker;
-  private static pendingMessages: UpdateNotificationSendableMessage[] = [];
-  private static processingPromise?: Promise<void>;
-  private static pendingAckResolvers: Map<number, () => void> = new Map();
-  private static nextMessageId = 1;
   private static lock: ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
-  // throttle state: last sent progress percent and timestamp per taskId
-  private static lastProgressPctByTask: Map<string, number> = new Map();
-  private static lastProgressTimeByTask: Map<string, number> = new Map();
 
   static registerEnqueue(item: EnqueueItem, success: boolean): void {
     const notificationConfigJsonString = item.notificationConfigJsonString;
@@ -156,108 +148,28 @@ export class NotificationService {
     taskStatusOrdinal?: number,
     progress?: number
   ): Promise<void> {
-    //console.info(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: taskJson=${taskJson}, notificationConfigJson=${notificationConfigJson}, taskStatusOrdinal=${taskStatusOrdinal}`);
-    const messageId = NotificationService.nextMessageId++;
-    const message = new UpdateNotificationSendableMessage(
-      "update",
-      taskJson,
-      notificationConfigJson,
-      taskStatusOrdinal,
-      BDPlugin.sendableUIContext,
-      progress,
-      messageId
-    );
-
-    //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: push message to pendingMessages`);
     return NotificationService.withLock(async () => {
-      if (NotificationService.shouldThrottle(taskJson, progress)) {
-        return;
-      }
-      NotificationService.pendingMessages.push(message);
-      //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: pendingMessages length=${NotificationService.pendingMessages.length}`);
-      NotificationService.processPendingMessages();
-      //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: after processPendingMessages`);
-    });
-  }
-
-  private static processPendingMessages(): Promise<void> | void {
-    if (NotificationService.processingPromise !== undefined) {
-      //console.info(BDPlugin.TAG, 'NotificationService.processingPromise !== undefined');
-      return NotificationService.processingPromise;
-    }
-    NotificationService.processingPromise = NotificationService.runMessageLoop();
-    return NotificationService.processingPromise;
-  }
-
-  private static async runMessageLoop(): Promise<void> {
-    try {
-      while (true) {
-        let message: UpdateNotificationSendableMessage | undefined;
-        await NotificationService.withLock(() => {
-          message = NotificationService.pendingMessages.shift();
-        });
-        if (message === undefined) {
-          break;
+      try {
+        const parsedTask = Task.fromPlain(JSON.parse(taskJson) as Task);
+        const workerInstance = new TaskWorker(context);
+        workerInstance.task = parsedTask;
+        workerInstance.notificationConfigJsonString = notificationConfigJson;
+        workerInstance.notificationConfig = notificationConfigJson
+          ? (JSON.parse(notificationConfigJson) as NotificationConfig)
+          : undefined;
+        if (progress !== undefined) {
+          workerInstance.notificationProgress = progress;
         }
-        //console.error(BDPlugin.TAG+"enter ensureWorker");
-        await NotificationService.sendMessageToWorker(message);
-      }
-    } catch (e) {
-      const err = e as BusinessError;
-      console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: error=${err.code} ${err.message}`);
-    } finally {
-      NotificationService.processingPromise = undefined;
-    }
-  }
-
-  private static configureAckHandler(workerInstance: worker.ThreadWorker): void {
-    if (workerInstance.onmessage) {
-      return;
-    }
-    workerInstance.onmessage = async (event: MessageEvents) => {
-      const data = event.data as NotificationAck;
-      const messageId = data ? data.messageId : undefined;
-      if (messageId === undefined) {
-        return;
-      }
-      await NotificationService.withLock(() => {
-        const resolver = NotificationService.pendingAckResolvers.get(messageId);
-        if (resolver) {
-          NotificationService.pendingAckResolvers.delete(messageId);
-          resolver();
+        if (taskStatusOrdinal === undefined) {
+          await NotificationService.cancelNotification(workerInstance.task?.taskId);
+          return;
         }
-      });
-    };
-  }
-
-  private static waitForAck(messageId: number, timeoutMs = 1000): Promise<void> {
-    return new Promise(async (resolve) => {
-      const timeout = setTimeout(async () => {
-        await NotificationService.withLock(() => {
-          NotificationService.pendingAckResolvers.delete(messageId);
-        });
-        resolve();
-      }, timeoutMs);
-      await NotificationService.withLock(() => {
-        NotificationService.pendingAckResolvers.set(messageId, () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
+        const taskStatus = taskStatusOrdinal as TaskStatus;
+        await NotificationService.updateNotification(workerInstance, taskStatus);
+      } catch (e) {
+        console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker main-thread update failed: ${e}`);
+      }
     });
-  }
-
-  private static async sendMessageToWorker(message: UpdateNotificationSendableMessage): Promise<void> {
-    const workerInstance = NotificationService.ensureWorker();
-    NotificationService.configureAckHandler(workerInstance);
-    if (message.messageId === undefined) {
-      message.messageId = NotificationService.nextMessageId++;
-    }
-    //console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: post message to workerInstance`);
-    const ackPromise = NotificationService.waitForAck(message.messageId);
-    workerInstance.postMessageWithSharedSendable(message);
-    //console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: posted message to workerInstance`);
-    await ackPromise;
   }
 
   private static async withLock<T>(fn: () => T | Promise<T>): Promise<T> {
@@ -265,44 +177,7 @@ export class NotificationService {
   }
 
   private static shouldThrottle(taskJson: string, progress?: number): boolean {
-    if (progress === undefined) {
-      return false;
-    }
-    let taskId: string | undefined;
-    try {
-      const parsed = JSON.parse(taskJson) as Record<string, string>;
-      taskId = parsed["taskId"];
-    } catch (_) {
-      taskId = undefined;
-    }
-    if (!taskId) {
-      return false;
-    }
-    const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
-    if (progressPct < 0) {
-      return false;
-    }
-    const now = Date.now();
-    const lastPct = NotificationService.lastProgressPctByTask.get(taskId);
-    const lastTs = NotificationService.lastProgressTimeByTask.get(taskId);
-    if (lastPct !== undefined && lastTs !== undefined) {
-      const pctDelta = Math.abs(progressPct - lastPct);
-      const timeDelta = now - lastTs;
-      if (pctDelta < 1 && timeDelta < 1000) {
-        return true;
-      }
-    }
-    NotificationService.lastProgressPctByTask.set(taskId, progressPct);
-    NotificationService.lastProgressTimeByTask.set(taskId, now);
     return false;
-  }
-
-  private static ensureWorker(): worker.ThreadWorker {
-    if (NotificationService.updateNotificationWorker === undefined) {
-      NotificationService.updateNotificationWorker =
-        new worker.ThreadWorker("../../../../../background_downloader/src/main/ets/components/Plugin/UpdateNotificationWorker.ets");
-    }
-    return NotificationService.updateNotificationWorker;
   }
 
   static async updateNotification(taskWorker: TaskWorker, taskStatus: TaskStatus): Promise<void> {
