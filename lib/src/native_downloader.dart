@@ -48,6 +48,7 @@ abstract base class NativeDownloader extends BaseDownloader {
             ? args.getRange(1, args.length).toList(growable: false)
             : args[1]
       );
+      //debugPrint('background channel message: $message');
       switch (message) {
         // simple status update
         case ('statusUpdate', int statusOrdinal):
@@ -144,25 +145,31 @@ abstract base class NativeDownloader extends BaseDownloader {
         case (
             'progressUpdate',
             [
-              double progress,
-              int expectedFileSize,
-              double networkSpeed,
-              int timeRemaining
+              num progress,
+              num expectedFileSize,
+              num networkSpeed,
+              num timeRemaining
             ]
           ):
+          final progValue = progress.toDouble();
+          final sizeValue = expectedFileSize.toInt();
+          final speedValue = networkSpeed.toDouble();
+          final timeValue = timeRemaining.toInt();
+          // debugPrint(
+          //     'background progress ${task.taskId} -> $progValue size=$sizeValue speed=$speedValue remaining=${Duration(milliseconds: timeValue)}');
           if (task.group != BaseDownloader.chunkGroup) {
             processProgressUpdate(TaskProgressUpdate(
                 task,
-                progress,
-                expectedFileSize,
-                networkSpeed,
-                Duration(milliseconds: timeRemaining)));
+                progValue,
+                sizeValue,
+                speedValue,
+                Duration(milliseconds: timeValue)));
           } else {
             // this is a chunk task, so pass parent taskId,
             // chunk taskId and progress to native
             Future.delayed(const Duration(milliseconds: 100)).then((_) =>
                 methodChannel.invokeMethod('chunkProgressUpdate',
-                    [Chunk.getParentTaskId(task), task.taskId, progress]));
+                    [Chunk.getParentTaskId(task), task.taskId, progValue]));
           }
 
         case ('canResume', bool canResume):

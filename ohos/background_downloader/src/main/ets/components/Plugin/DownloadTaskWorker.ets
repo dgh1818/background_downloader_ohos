@@ -135,6 +135,7 @@ class DownloadTaskWorker extends TaskWorker {
       fs.truncateSync(file.fd, this.startByte)
       fs.closeSync(file)
     } catch (e) {
+      let message = (e as BusinessError).message;
       this.taskException = new TaskException(ExceptionType.resume, undefined,
         "Could not truncate temp file")
       return false
@@ -327,7 +328,8 @@ class DownloadTaskWorker extends TaskWorker {
           super.determineRunInForeground(task, contentLength);
           prepared = true;
         } catch (e) {
-          this.setTaskException(e as ESObject);
+          let message = (e as BusinessError).message;
+          this.setTaskException(message);
           cleanup(TaskStatus.failed);
         }
       });
@@ -347,7 +349,8 @@ class DownloadTaskWorker extends TaskWorker {
             console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write chunk bytes", bytes.byteLength, "total", this.bytesTotal);
           }
         } catch (e) {
-          this.setTaskException(e as ESObject);
+          let message = (e as BusinessError).message;
+          this.setTaskException(message);
           cleanup(TaskStatus.failed);
         }
       });
@@ -362,10 +365,10 @@ class DownloadTaskWorker extends TaskWorker {
           //const downloadSpeedValue = this.task?.providesProgressUpdates() ? -1.000001 : -1.000001;
           workerPort.postMessage({
             command: "progressUpdate",
-            progress: progressValue,
+            progress: received / total,
             expectedFileSize: total,
             taskJson: TaskWorker.taskToJsonString(task!),
-            downloadSpeed: -1.000001,
+            downloadSpeed: -1,
             timeRemaining: -1000
           });
         }
@@ -391,7 +394,7 @@ class DownloadTaskWorker extends TaskWorker {
           if (tempFile) {
             fs.copyFileSync(tempFile, destFilePath);
             console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "copied tempFile to dest", tempFile, destFilePath);
-            await this.saveFileToDownloads(tempFile, this.task!.filename);
+            //await this.saveFileToDownloads(tempFile, this.task!.filename);
             this.deleteTempFile();
           }
           // push a final progress update to 100% when finished (even if length unknown)
@@ -405,7 +408,8 @@ class DownloadTaskWorker extends TaskWorker {
           });
           cleanup(TaskStatus.complete);
         } catch (e) {
-          this.setTaskException(e as string);
+          let message = (e as BusinessError).message;
+          this.setTaskException(message);
           cleanup(TaskStatus.failed);
         }
       });
@@ -427,10 +431,10 @@ class DownloadTaskWorker extends TaskWorker {
             console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "prepared false but code ok", code);
           }
         }
-      } catch (err) {
-        const body = err instanceof Error ? err.message : JSON.stringify(err ?? {});
-        this.setTaskException(err as ESObject);
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "request threw", body);
+      } catch (e) {
+        let message = (e as BusinessError).message;
+        this.setTaskException(message);
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "request threw", message);
         cleanup(TaskStatus.failed);
       }
     });
@@ -547,8 +551,3 @@ workerPort.onmessageerror = () => {
 workerPort.onerror = (err: ErrorEvent) => {
   console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onerror for DownloadTaskWorker:', err.message)
 }
-
-
-
-
-
