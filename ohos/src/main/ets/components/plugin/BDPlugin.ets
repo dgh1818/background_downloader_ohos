@@ -40,7 +40,7 @@ import {
   url,
   worker
 } from "@kit.ArkTS";
-import { fileUri } from '@kit.CoreFileKit';
+import { fileUri, fileIo as fs } from '@kit.CoreFileKit';
 import dataPreferences from '@ohos.data.preferences'
 import { photoAccessHelper } from "@kit.MediaLibraryKit";
 import { dataSharePredicates, preferences } from "@kit.ArkData";
@@ -75,6 +75,7 @@ export class WorkerShareableData {
   public notificationConfigJsonStrings: collections.Map<string, string> = new collections.Map<string, string>();
   public canceledTaskIds: collections.Set<string> = new collections.Set<string>()
   public cancelUpdateSentForTaskId: collections.Map<string, number> = new collections.Map<string, number>();
+  public tempFilePathByTaskId: collections.Map<string, string> = new collections.Map<string, string>();
   public lock: ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
 
   public async withLock(action: () => void | Promise<void>): Promise<void> {
@@ -144,6 +145,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   // Avoid touching the enum at module eval time; initialize in onAttachedToAbility
   public static requireWifi: RequireWiFi = 0 as RequireWiFi;
   public static workerShareableData: WorkerShareableData = new WorkerShareableData();
+  public static runningWorkers: Map<string, worker.ThreadWorker> = new Map<string, worker.ThreadWorker>();
   // <taskId, timeMillis>
   // <taskId>, acts as flag
   //public static parallelDownloadTaskWorkers = new Map<string, ParallelDownloadTaskWorker>() //Was a HashMap
@@ -237,10 +239,20 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
     const downloadTaskWorker: worker.ThreadWorker =
       new worker.ThreadWorker('../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets');
+    BDPlugin.runningWorkers.set(task.taskId, downloadTaskWorker);
 
     downloadTaskWorker.onerror = (err: ErrorEvent) => {
       console.info("Worker出错了：" + err.message);
     }
+
+    const taskIdForWorker = task.taskId;
+    downloadTaskWorker.onexit = (code: number) => {
+      BDPlugin.runningWorkers.delete(taskIdForWorker);
+      // Only clean temp file on abnormal exit; normal completion is cleaned in worker
+      if (code != 0) {
+        BDPlugin.cleanupTempFileForTask(taskIdForWorker);
+      }
+    };
 
     downloadTaskWorker.onmessage = async (event: MessageEvents) => {
       const data = event.data as Record<string, ESObject>;
@@ -353,9 +365,9 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       const tasksMap = getTaskMap(prefs);
       tasksMap.set(task.taskId, task);
       // Store as plain object for compatibility with existing reads
-      const serializedTasks: Record<string, Task> = {};
+      const serializedTasks: Record<string, string> = {};
       tasksMap.forEach((value, key) => {
-        serializedTasks[key] = value;
+        serializedTasks[key] = TaskWorker.taskToJsonString(task);
       });
       prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
       prefs.flushSync();
@@ -436,6 +448,9 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       case 'enqueueAll':
         this.methodEnqueueAll(call, result);
         break;
+      case 'cancelTasksWithIds':
+        this.methodCancelTasksWithIds(call, result);
+        break;
 
 
       default:
@@ -515,6 +530,85 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     result.success({});
   }
 
+  /**
+   * Cancel queued tasks with given ids (does not stop already running ones)
+   */
+  private async methodCancelTasksWithIds(call: MethodCall, result: MethodResult) {
+    const taskIds = call.args as Array<string>;
+    try {
+      console.error(BDPlugin.TAG, `cancelTasksWithIds start: ${taskIds.join(",")}`);
+      if (BDPlugin.holdingQueue) {
+        await BDPlugin.holdingQueue.stateMutex.lockAsync(async () => {
+          taskIds.forEach((id) => {
+            const idx = BDPlugin.holdingQueue!.enqueuedTaskIds.indexOf(id);
+            if (idx >= 0) {
+              BDPlugin.holdingQueue!.enqueuedTaskIds.splice(idx, 1);
+              console.error(BDPlugin.TAG, `Removed ${id} from holdingQueue`);
+            }
+          });
+        });
+      }
+      // terminate running workers and delete temp files
+      taskIds.forEach((id) => {
+        const w = BDPlugin.runningWorkers.get(id);
+        if (w) {
+          console.error(BDPlugin.TAG, `Terminating worker for ${id}`);
+          try {
+            w.postMessage({ command: "cancelWork" });
+            console.error(BDPlugin.TAG, `Sent cancelWork to worker for ${id}`);
+          } catch (_) {}
+          try {
+            w.terminate();
+            console.error(BDPlugin.TAG, `Terminated worker for ${id} successfully`);
+          } catch (_) {}
+          BDPlugin.runningWorkers.delete(id);
+          console.error(BDPlugin.TAG, `Terminated worker for ${id}`);
+        }
+        console.error(BDPlugin.TAG, `Cleanup temp file for ${id}`);
+        BDPlugin.cleanupTempFileForTask(id);
+        console.error(BDPlugin.TAG, `Marked ${id} as canceled`);
+      });
+      // emit canceled status for matching tasks from persistent storage
+      const options: preferences.Options = { name: 'DEFAULT' };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
+      console.error(BDPlugin.TAG, `Obtained prefs for cancelTasksWithIds`);
+      let tasksMap: Map<string, Task>;
+      try {
+        tasksMap = getTaskMap(prefs);
+        console.error(BDPlugin.TAG, `Loaded tasks map with ${tasksMap.size} entries`);
+      } catch (mapErr) {
+        console.error(BDPlugin.TAG, `getTaskMap failed while canceling ${taskIds}: ${mapErr}`);
+        result.success(false);
+        return;
+      }
+      // Ensure TaskWorker has a shareable ref for cancellation updates
+      TaskWorker.workerShareableData = BDPlugin.workerShareableData;
+      for (const id of taskIds) {
+        const task = tasksMap.get(id);
+        if (task) {
+          console.error(BDPlugin.TAG, `Posting canceled status for ${id}`);
+          await TaskWorker.processStatusUpdate(
+            task,
+            TaskStatus.canceled,
+            prefs,
+            BDPlugin.uiContext,
+            undefined,
+            undefined,
+            undefined,
+            undefined
+          );
+        } else {
+          console.error(BDPlugin.TAG, `No task found in prefs for ${id}, skipping status update`);
+        }
+      }
+      console.error(BDPlugin.TAG, `cancelTasksWithIds completed ok`);
+      result.success(true);
+    } catch (e) {
+      console.error(BDPlugin.TAG, `Failed to cancel tasks ${taskIds}: ${e}`);
+      result.success(false);
+    }
+  }
+
   private scope?: taskpool.SequenceRunner;
 
   static methodbackgroundChannel(
@@ -529,6 +623,19 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
   static taskRequiresWifi(task: Task): boolean {
     return (BDPlugin.requireWifi == RequireWiFi.forAllTasks ||
       (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
+  }
+
+  private static cleanupTempFileForTask(taskId: string) {
+    const paths = BDPlugin.workerShareableData.tempFilePathByTaskId;
+    const tempPath = paths.get(taskId);
+    if (tempPath) {
+      try {
+        fs.unlinkSync(tempPath);
+        console.info(BDPlugin.TAG, `Deleted temp file ${tempPath} for task ${taskId}`);
+      } catch (_e) {
+      }
+      paths.delete(taskId);
+    }
   }
 
 

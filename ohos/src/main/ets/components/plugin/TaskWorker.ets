@@ -794,24 +794,30 @@ export class TaskWorker {
 /** Return the map of tasks stored in preferences */
 export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task> {
   const tasksMapJson = (prefs.getSync(BDPlugin.keyTasksMap, "{}") as string) ?? "{}";
-  let parsed: Record<string, Task> | undefined;
+  let parsed: Record<string, string> | undefined;
   try {
-    parsed = JSON.parse(tasksMapJson) as Record<string, Task>;
+    parsed = JSON.parse(tasksMapJson) as Record<string, string>;
   } catch (_) {
     parsed = {};
   }
-
   const result = new Map<string, Task>();
   if (!parsed) {
     return result;
   }
 
-  const entries: Array<[string, Task]> = Object.entries(parsed);
+  const entries: Array<[string, string]> = Object.entries(parsed);
   entries.forEach((entry) => {
     const taskId = entry[0];
     const taskData = entry[1];
-    const task = Task.fromPlain(taskData as Task);
-    result.set(taskId, task);
+    try {
+      const task = Task.fromPlain(JSON.parse(taskData) as Task);
+      result.set(taskId, task);
+    } catch (e) {
+      let error = e as BusinessError;
+      console.error("Error deserializing task with id "+taskId+": "+error.message);
+      prefs.setSync(BDPlugin.keyTasksMap, "{}");
+      prefs.flushSync();
+    }
   });
 
   return result;

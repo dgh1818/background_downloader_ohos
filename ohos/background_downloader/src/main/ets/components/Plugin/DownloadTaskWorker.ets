@@ -20,6 +20,8 @@ import { preferences } from '@kit.ArkData';
 import { NotificationConfig } from '../../../../../../src/main/ets/components/plugin/Notifications';
 import { BusinessError } from '@kit.BasicServicesKit';
 
+let httpRequest:http.HttpRequest;
+
 class DownloadTaskWorker extends TaskWorker {
   constructor(applicationContext: common.UIAbilityContext,
     workerParams: collections.Map<string, string | number | boolean | ResumeData | undefined>) {
@@ -78,6 +80,10 @@ class DownloadTaskWorker extends TaskWorker {
         fs.unlinkSync(this.tempFilePath);
       } catch (e) {
         console.info(DownloadTaskWorker.DownloadTaskWorkerTag + "Could not delete temp file at" + this.tempFilePath);
+      }
+      // remove cached temp path for this task
+      if (this.task && TaskWorker.workerShareableData) {
+        TaskWorker.workerShareableData.tempFilePathByTaskId.delete(this.task.taskId);
       }
     }
   }
@@ -165,7 +171,7 @@ class DownloadTaskWorker extends TaskWorker {
       this.prefs = preferences.getPreferencesSync(this.applicationContext, prefOptions);
     }
 
-    const httpRequest = http.createHttp();
+    httpRequest = http.createHttp();
     const task = this.task;
 
     return await new Promise<TaskStatus>(async (resolve) => {
@@ -297,6 +303,9 @@ class DownloadTaskWorker extends TaskWorker {
             }
             if (this.tempFilePath.length == 0) {
               this.tempFilePath = `${tempDir}/com.bbflight.background_downloader${Math.floor(Math.random() * 1000000000)}`;
+            }
+            if (TaskWorker.workerShareableData) {
+              TaskWorker.workerShareableData.tempFilePathByTaskId.set(task.taskId, this.tempFilePath);
             }
             if (insufficientSpace(this.applicationContext!, contentLength)) {
               this.taskException = new TaskException(
@@ -470,28 +479,30 @@ type WorkerParamValue = string | number | boolean | sendableContextManager.Senda
 
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+let currentTaskId:string
 
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");
   let workercommand = event.data as WorkerCommand;
 
   let command = workercommand.command;
-  let sendableUIContext = workercommand.sendableUIContext;
-  let taskWorkerData = workercommand.taskWorkerData;
-  let workerShareableData = workercommand.workerShareableData;
-  if(!workerShareableData) {
-    return;
-  }
-  TaskWorker.workerShareableData = workerShareableData;
-
-  let uiContext = sendableContextManager.convertToUIAbilityContext(sendableUIContext);
-  if (!uiContext) {
-    console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a valid UI context')
-    return;
-  }
+  
   console.error("enter on message:command is" + command);
   switch (command) {
     case "startWork": {
+      let sendableUIContext = workercommand.sendableUIContext;
+      let taskWorkerData = workercommand.taskWorkerData;
+      let workerShareableData = workercommand.workerShareableData;
+      if(!workerShareableData) {
+        return;
+      }
+      TaskWorker.workerShareableData = workerShareableData;
+
+      let uiContext = sendableContextManager.convertToUIAbilityContext(sendableUIContext);
+      if (!uiContext) {
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'DownloadTaskWorker requires a valid UI context')
+        return;
+      }
       // let TaskWorkerData = new collections.Map<string, string | number | boolean | ResumeData | undefined>();
       // taskWorkerData.forEach((value, key) => {
       //   TaskWorkerData.set(key, value);
@@ -506,6 +517,7 @@ workerPort.onmessage = async (event: MessageEvents) => {
         return
       }
       worker.task = Task.fromPlain(JSON.parse(taskJson) as Task);
+      currentTaskId = worker.task.taskId;
       console.error("startWork: task parsed:Json is "+taskJson);
       worker.notificationConfigJsonString =
         taskWorkerData.get(TaskWorkerKey.keyNotificationConfig) as string | undefined;
@@ -539,6 +551,16 @@ workerPort.onmessage = async (event: MessageEvents) => {
       console.error("startWork: startDoTask returned");
     }
       break;
+    case "cancelWork": {
+      console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "received cancelWork, destroying httpRequest");
+      try {
+        httpRequest?.destroy();
+      } catch (e) {
+        let error = e as BusinessError;
+        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "error destroying httpRequest on cancel", error.message);
+      }
+    }
+      break;
     default:
       break;
   }
@@ -549,5 +571,20 @@ workerPort.onmessageerror = () => {
 }
 
 workerPort.onerror = (err: ErrorEvent) => {
-  console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onerror for DownloadTaskWorker:', err.message)
+  console.error(DownloadTaskWorker.DownloadTaskWorkerTag, 'workerPort onexit', err.message);
+  // on abnormal exit, try to clean temp file
+  if (TaskWorker.workerShareableData) {
+    // taskId may not be available here; best-effort cleanup by iterating known temp files
+    const paths = TaskWorker.workerShareableData?.tempFilePathByTaskId;
+    const tempPath = paths?.get(currentTaskId);
+    if (tempPath) {
+      try {
+        fs.unlinkSync(tempPath);
+        console.info(`${DownloadTaskWorker.DownloadTaskWorkerTag} deleted temp file ${tempPath} for task ${currentTaskId}`);
+      } catch (e) {
+      }
+      paths?.delete(currentTaskId);
+      httpRequest.destroy();
+    }
+  }
 }
