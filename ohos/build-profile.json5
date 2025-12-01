@@ -3,7 +3,7 @@
   buildOption: {
     "sourceOption": {
       "workers": [
-        //"./worker/src/main/ets/components/plugin/UpdateNotificationWorker.ets",
+        "./background_downloader/src/main/ets/components/Plugin/UpdateNotificationWorker.ets",
         "./background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets"
       ]
     },

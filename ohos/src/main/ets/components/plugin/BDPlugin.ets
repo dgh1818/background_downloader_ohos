@@ -180,7 +180,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
 
     const parameters: Record<string, string | number | boolean> = {};
     parameters[TaskWorkerKey.keyTask] = TaskWorker.taskToJsonString(task) as string;
-    console.error(BDPlugin.TAG, `before if (notificationConfigJsonString !== undefined) {`);
+    console.error(BDPlugin.TAG, `before if (notificationConfigJsonString !== undefined) {:`+notificationConfigJsonString !== undefined);
     if (notificationConfigJsonString !== undefined) {
       parameters[TaskWorkerKey.keyNotificationConfig] = notificationConfigJsonString;
       await BDPlugin.workerShareableData.withLock(() => {
@@ -204,29 +204,10 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       ? workScheduler.NetworkType.NETWORK_TYPE_WIFI
       : workScheduler.NetworkType.NETWORK_TYPE_ANY;
 
-    let workerName: string;
-    console.error("before switch (task.taskType)" + task.taskType);
-    switch (task.taskType) {
-      case "ParallelDownloadTask":
-        workerName = "ParallelDownloadTaskWorker";
-        break;
-      case "DownloadTask":
-      case "UriDownloadTask":
-        workerName = "DownloadTaskWorker";
-        break;
-      case "UploadTask":
-      case "UriUploadTask":
-        workerName = "UploadTaskWorker";
-        break;
-      case "MultiUploadTask":
-        workerName = "UploadTaskWorker";
-        break;
-      case "DataTask":
-        workerName = "DataTaskWorker";
-        break;
-      default:
-        console.error(BDPlugin.TAG, `Unknown taskType ${task.taskType}`);
-        return false;
+    const workerPath = BDPlugin.resolveWorkerPath(task.taskType);
+    if (!workerPath) {
+      console.error(BDPlugin.TAG, `Unknown taskType ${task.taskType}`);
+      return false;
     }
 
     // const request: workScheduler.WorkInfo = {
@@ -237,16 +218,15 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     //   parameters:parameters,
     // };
 
-    const downloadTaskWorker: worker.ThreadWorker =
-      new worker.ThreadWorker('../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets');
-    BDPlugin.runningWorkers.set(task.taskId, downloadTaskWorker);
+    const taskWorker: worker.ThreadWorker = new worker.ThreadWorker(workerPath);
+    BDPlugin.runningWorkers.set(task.taskId, taskWorker);
 
-    downloadTaskWorker.onerror = (err: ErrorEvent) => {
+    taskWorker.onerror = (err: ErrorEvent) => {
       console.info("Worker出错了：" + err.message);
     }
 
     const taskIdForWorker = task.taskId;
-    downloadTaskWorker.onexit = (code: number) => {
+    taskWorker.onexit = (code: number) => {
       BDPlugin.runningWorkers.delete(taskIdForWorker);
       // Only clean temp file on abnormal exit; normal completion is cleaned in worker
       if (code != 0) {
@@ -254,7 +234,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       }
     };
 
-    downloadTaskWorker.onmessage = async (event: MessageEvents) => {
+    taskWorker.onmessage = async (event: MessageEvents) => {
       const data = event.data as Record<string, ESObject>;
       const command = data["command"] as string | undefined;
       if (!command) {
@@ -300,6 +280,35 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
             );
             break;
           }
+          case "reEnqueue": {
+            const taskJson = data["taskJson"] as string;
+            if (!taskJson) {
+              break;
+            }
+            const taskFromMsg = Task.fromPlain(JSON.parse(taskJson) as Task);
+            const notificationConfigJsonString = data["notificationConfigJsonString"] as string | undefined;
+            const resumeDataObj = data["resumeData"] as ResumeData | undefined;
+            const initialDelayMillis = (data["initialDelayMillis"] as number) ?? 0;
+            let resumeData: ResumeData | undefined = undefined;
+            if (resumeDataObj !== undefined) {
+              resumeData = new ResumeData({
+                task: taskFromMsg,
+                data: resumeDataObj.data,
+                requiredStartByte: resumeDataObj.requiredStartByte,
+                eTag: resumeDataObj.eTag
+              });
+            }
+            if (BDPlugin.uiContext !== undefined) {
+              await BDPlugin.doEnqueue(
+                BDPlugin.uiContext,
+                taskFromMsg,
+                notificationConfigJsonString,
+                resumeData,
+                initialDelayMillis
+              );
+            }
+            break;
+          }
           default:
             console.error(BDPlugin.TAG, `Unknown worker command ${command}`);
             break;
@@ -327,7 +336,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     //let sendableObject:SendableObject = new SendableObject("startWork",sendableContext,taskWorkerData)
     let workCommand = new WorkerCommand("startWork",BDPlugin.sendableUIContext!,taskWorkerData,BDPlugin.workerShareableData)
 
-    downloadTaskWorker.postMessageWithSharedSendable(workCommand);
+    taskWorker.postMessageWithSharedSendable(workCommand);
 
     //downloadTaskWorker.postMessageWithSharedSendable(sendableObject);
     //.startWork(request);
@@ -625,6 +634,24 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       (BDPlugin.requireWifi == RequireWiFi.asSetByTask && task.requiresWiFi))
   }
 
+  private static resolveWorkerPath(taskType: string): string | undefined {
+    switch (taskType) {
+      case "ParallelDownloadTask":
+        return "../../../../../background_downloader/src/main/ets/components/Plugin/ParallelDownloadTaskWorker.ets";
+      case "DownloadTask":
+      case "UriDownloadTask":
+        return "../../../../../background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets";
+      case "UploadTask":
+      case "UriUploadTask":
+      case "MultiUploadTask":
+        return "../../../../../background_downloader/src/main/ets/components/Plugin/UploadTaskWorker.ets";
+      case "DataTask":
+        return "../../../../../background_downloader/src/main/ets/components/Plugin/DataTaskWorker.ets";
+      default:
+        return undefined;
+    }
+  }
+
   private static cleanupTempFileForTask(taskId: string) {
     const paths = BDPlugin.workerShareableData.tempFilePathByTaskId;
     const tempPath = paths.get(taskId);
@@ -750,6 +777,8 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     let args: Array<ESObject> = call.args as Array<ESObject>;
     let taskListJsonString = args[0] as string;
     let notificationConfigListJsonString = args[1] as string;
+
+    console.error(BDPlugin.TAG, "notificationConfigListJsonString is " + notificationConfigListJsonString);
 
     BDPlugin.latestPluginInstance = this;
 

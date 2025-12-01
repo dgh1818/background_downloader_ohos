@@ -1,9 +1,13 @@
 import { EnqueueItem } from "./HoldingQueue";
 import { common, sendableContextManager } from "@kit.AbilityKit";
 import { TaskWorker } from "./TaskWorker";
-import { worker } from "@kit.ArkTS";
+import { ArkTSUtils, MessageEvents, worker } from "@kit.ArkTS";
 //import { UpdateNotificationWorker } from "./UpdateNotificationWorker";
 import { TaskStatus } from "./Models";
+import { notificationManager } from '@kit.NotificationKit';
+import { hash } from '@kit.CoreFileKit';
+import BDPlugin from "./BDPlugin";
+import { BusinessError } from '@kit.BasicServicesKit';
 
 /**
  * Notification configuration object
@@ -79,12 +83,53 @@ export interface UpdateNotificationWorkerMessage {
   notificationConfigJson?: string;
   taskStatusOrdinal?: number;
   uiContext?: sendableContextManager.SendableContext;
+  progress?: number;
+  messageId?: number;
+}
+
+interface NotificationAck {
+  messageId?: number;
+}
+
+@Sendable
+export class UpdateNotificationSendableMessage implements UpdateNotificationWorkerMessage {
+  constructor(
+    command: string,
+    taskJson: string,
+    notificationConfigJson?: string,
+    taskStatusOrdinal?: number,
+    uiContext?: sendableContextManager.SendableContext,
+    progress?: number,
+    messageId?: number
+  ) {
+    this.command = command;
+    this.taskJson = taskJson;
+    this.notificationConfigJson = notificationConfigJson;
+    this.taskStatusOrdinal = taskStatusOrdinal;
+    this.uiContext = uiContext;
+    this.progress = progress;
+    this.messageId = messageId;
+  }
+
+  public command: string;
+  public taskJson: string;
+  public notificationConfigJson?: string;
+  public taskStatusOrdinal?: number;
+  public uiContext?: sendableContextManager.SendableContext;
+  public progress?: number;
+  public messageId?: number;
 }
 
 export class NotificationService {
   private static updateNotificationWorker?: worker.ThreadWorker;
-  private static pendingMessages: UpdateNotificationWorkerMessage[] = [];
+  private static pendingMessages: UpdateNotificationSendableMessage[] = [];
   private static processingPromise?: Promise<void>;
+  private static pendingAckResolvers: Map<number, () => void> = new Map();
+  private static nextMessageId = 1;
+  private static lock: ArkTSUtils.locks.AsyncLock = new ArkTSUtils.locks.AsyncLock();
+  // throttle state: last sent progress percent and timestamp per taskId
+  private static lastProgressPctByTask: Map<string, number> = new Map();
+  private static lastProgressTimeByTask: Map<string, number> = new Map();
 
   static registerEnqueue(item: EnqueueItem, success: boolean): void {
     const notificationConfigJsonString = item.notificationConfigJsonString;
@@ -96,8 +141,8 @@ export class NotificationService {
     if (groupNotificationId.length !== 0) {
       //const serializedTask = new SendableTask(item.task);
       NotificationService.createUpdateNotificationWorker(
-        item.context,
-        JSON.stringify(item.task),
+        BDPlugin.uiContext!,
+        TaskWorker.taskToJsonString(item.task),
         notificationConfigJsonString,
         success ? TaskStatus.enqueued : TaskStatus.failed
       );
@@ -108,73 +153,211 @@ export class NotificationService {
     context: common.UIAbilityContext,
     taskJson: string,
     notificationConfigJson?: string,
-    taskStatusOrdinal?: number
-  ): void {
-    const message: UpdateNotificationWorkerMessage = {
-      command: "update",
+    taskStatusOrdinal?: number,
+    progress?: number
+  ): Promise<void> {
+    //console.info(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: taskJson=${taskJson}, notificationConfigJson=${notificationConfigJson}, taskStatusOrdinal=${taskStatusOrdinal}`);
+    const messageId = NotificationService.nextMessageId++;
+    const message = new UpdateNotificationSendableMessage(
+      "update",
       taskJson,
-    };
-    if (notificationConfigJson !== undefined) {
-      message.notificationConfigJson = notificationConfigJson;
-    }
-    if (taskStatusOrdinal !== undefined) {
-      message.taskStatusOrdinal = taskStatusOrdinal;
-    }
-    if (context !== undefined) {
-      message.uiContext = sendableContextManager.convertFromContext(context);
-    }
-    NotificationService.pendingMessages.push(message);
-    NotificationService.processPendingMessages();
+      notificationConfigJson,
+      taskStatusOrdinal,
+      BDPlugin.sendableUIContext,
+      progress,
+      messageId
+    );
+
+    //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: push message to pendingMessages`);
+    return NotificationService.withLock(async () => {
+      if (NotificationService.shouldThrottle(taskJson, progress)) {
+        return;
+      }
+      NotificationService.pendingMessages.push(message);
+      //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: pendingMessages length=${NotificationService.pendingMessages.length}`);
+      NotificationService.processPendingMessages();
+      //console.error(BDPlugin.TAG, `NotificationService.createUpdateNotificationWorker: after processPendingMessages`);
+    });
   }
 
-  private static processPendingMessages(): void {
+  private static processPendingMessages(): Promise<void> | void {
     if (NotificationService.processingPromise !== undefined) {
-      return;
+      //console.info(BDPlugin.TAG, 'NotificationService.processingPromise !== undefined');
+      return NotificationService.processingPromise;
     }
     NotificationService.processingPromise = NotificationService.runMessageLoop();
+    return NotificationService.processingPromise;
   }
 
   private static async runMessageLoop(): Promise<void> {
     try {
-      while (NotificationService.pendingMessages.length > 0) {
-        const message = NotificationService.pendingMessages.shift();
+      while (true) {
+        let message: UpdateNotificationSendableMessage | undefined;
+        await NotificationService.withLock(() => {
+          message = NotificationService.pendingMessages.shift();
+        });
         if (message === undefined) {
-          continue;
+          break;
         }
-        const workerInstance = NotificationService.ensureWorker();
-        workerInstance.postMessage(message);
+        //console.error(BDPlugin.TAG+"enter ensureWorker");
+        await NotificationService.sendMessageToWorker(message);
       }
+    } catch (e) {
+      const err = e as BusinessError;
+      console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: error=${err.code} ${err.message}`);
     } finally {
       NotificationService.processingPromise = undefined;
     }
   }
 
+  private static configureAckHandler(workerInstance: worker.ThreadWorker): void {
+    if (workerInstance.onmessage) {
+      return;
+    }
+    workerInstance.onmessage = async (event: MessageEvents) => {
+      const data = event.data as NotificationAck;
+      const messageId = data ? data.messageId : undefined;
+      if (messageId === undefined) {
+        return;
+      }
+      await NotificationService.withLock(() => {
+        const resolver = NotificationService.pendingAckResolvers.get(messageId);
+        if (resolver) {
+          NotificationService.pendingAckResolvers.delete(messageId);
+          resolver();
+        }
+      });
+    };
+  }
+
+  private static waitForAck(messageId: number, timeoutMs = 1000): Promise<void> {
+    return new Promise(async (resolve) => {
+      const timeout = setTimeout(async () => {
+        await NotificationService.withLock(() => {
+          NotificationService.pendingAckResolvers.delete(messageId);
+        });
+        resolve();
+      }, timeoutMs);
+      await NotificationService.withLock(() => {
+        NotificationService.pendingAckResolvers.set(messageId, () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+    });
+  }
+
+  private static async sendMessageToWorker(message: UpdateNotificationSendableMessage): Promise<void> {
+    const workerInstance = NotificationService.ensureWorker();
+    NotificationService.configureAckHandler(workerInstance);
+    if (message.messageId === undefined) {
+      message.messageId = NotificationService.nextMessageId++;
+    }
+    //console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: post message to workerInstance`);
+    const ackPromise = NotificationService.waitForAck(message.messageId);
+    workerInstance.postMessageWithSharedSendable(message);
+    //console.error(BDPlugin.TAG, `NotificationService.runMessageLoop: posted message to workerInstance`);
+    await ackPromise;
+  }
+
+  private static async withLock<T>(fn: () => T | Promise<T>): Promise<T> {
+    return NotificationService.lock.lockAsync(fn);
+  }
+
+  private static shouldThrottle(taskJson: string, progress?: number): boolean {
+    if (progress === undefined) {
+      return false;
+    }
+    let taskId: string | undefined;
+    try {
+      const parsed = JSON.parse(taskJson) as Record<string, string>;
+      taskId = parsed["taskId"];
+    } catch (_) {
+      taskId = undefined;
+    }
+    if (!taskId) {
+      return false;
+    }
+    const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
+    if (progressPct < 0) {
+      return false;
+    }
+    const now = Date.now();
+    const lastPct = NotificationService.lastProgressPctByTask.get(taskId);
+    const lastTs = NotificationService.lastProgressTimeByTask.get(taskId);
+    if (lastPct !== undefined && lastTs !== undefined) {
+      const pctDelta = Math.abs(progressPct - lastPct);
+      const timeDelta = now - lastTs;
+      if (pctDelta < 1 && timeDelta < 1000) {
+        return true;
+      }
+    }
+    NotificationService.lastProgressPctByTask.set(taskId, progressPct);
+    NotificationService.lastProgressTimeByTask.set(taskId, now);
+    return false;
+  }
+
   private static ensureWorker(): worker.ThreadWorker {
     if (NotificationService.updateNotificationWorker === undefined) {
-      NotificationService.updateNotificationWorker = new worker.ThreadWorker("./UpdateNotificationWorker");
+      NotificationService.updateNotificationWorker =
+        new worker.ThreadWorker("../../../../../background_downloader/src/main/ets/components/Plugin/UpdateNotificationWorker.ets");
     }
     return NotificationService.updateNotificationWorker;
   }
 
-  static updateNotification(taskWorker: TaskWorker, taskStatus: TaskStatus): void {
+  static async updateNotification(taskWorker: TaskWorker, taskStatus: TaskStatus): Promise<void> {
     const notificationConfig = taskWorker.notificationConfig;
     if (notificationConfig === undefined) {
       return;
     }
     const notificationType = NotificationService.notificationTypeForTaskStatus(taskStatus);
     const groupNotificationId = notificationConfig.groupNotificationId;
-    if (groupNotificationId.length !== 0) {
-      // Group notifications are not yet implemented on ArkTS.
-      return;
-    }
     const template = NotificationService.notificationTemplateForType(notificationConfig, notificationType);
     if (template === undefined) {
+      // if no template, cancel any existing notification for this task
+      await NotificationService.cancelNotification(taskWorker.task?.taskId);
       return;
     }
     console.info(
       'NotificationService',
       `updateNotification(taskId=${taskWorker.task?.taskId}, type=${NotificationType[notificationType]}, title=${template.title})`
     );
+
+    const title = template.title ?? "";
+    const body = template.body ?? "";
+    const fileName = taskWorker.task?.filename ?? "";
+    const progress = taskWorker.notificationProgress;
+    console.error('NotificationService', `updateNotification: progress=${progress}`);
+    const id = await NotificationService.notificationIdForTask(taskWorker.task?.taskId);
+
+    const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
+    console.error('NotificationService', `updateNotification: progressPct=${progressPct}`);
+    const request: notificationManager.NotificationRequest = {
+      id: id,
+      //groupName: groupNotificationId && groupNotificationId.length > 0 ? groupNotificationId : undefined,
+      groupName:"immich",
+      content: {
+        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+        normal: {
+          title: `${title}`,
+          text: `${fileName}`,
+          additionalText: progressPct >= 0 ? `${progressPct}%` : `${body}`
+        }
+      },
+      template: {
+        name: "downloadTemplate",
+        data: {
+          title: `${title}`,
+          fileName: `${fileName}`,
+          progressValue: progressPct >= 0 ? progressPct : 0
+        }
+      }
+    };
+    try {
+      notificationManager.publish(request);
+    } catch (e) {
+      console.error('NotificationService', `Failed to publish notification for task ${taskWorker.task?.taskId}: ${e}`);
+    }
   }
 
   private static notificationTypeForTaskStatus(taskStatus: TaskStatus): NotificationType {
@@ -215,5 +398,28 @@ export class NotificationService {
       default:
         return undefined;
     }
+  }
+
+  static async cancelNotification(taskId?: string) {
+    if (!taskId) {
+      return;
+    }
+    const id = await NotificationService.notificationIdForTask(taskId);
+    try {
+      notificationManager.cancel(id);
+    } catch (_) {
+    }
+  }
+
+  private static async notificationIdForTask(taskId?: string): Promise<number> {
+    if (!taskId) {
+      return 0;
+    }
+    // simple deterministic hash similar to Java String.hashCode
+    let hashVal = 0;
+    for (let i = 0; i < taskId.length; i++) {
+      hashVal = ((hashVal << 5) - hashVal + taskId.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hashVal);
   }
 }

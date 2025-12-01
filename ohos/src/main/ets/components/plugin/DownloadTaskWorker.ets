@@ -17,6 +17,14 @@ import { collections, ErrorEvent, MessageEvents, ThreadWorkerGlobalScope, uri, u
 import { preferences } from '@kit.ArkData';
 import { NotificationConfig } from './Notifications';
 
+interface ReEnqueueMessage {
+  command: "reEnqueue";
+  taskJson: string;
+  notificationConfigJsonString?: string;
+  resumeData?: ResumeData;
+  initialDelayMillis: number;
+}
+
 class DownloadTaskWorker extends TaskWorker {
   constructor(applicationContext: common.UIAbilityContext,
     workerParams: collections.Map<string, string | number | boolean | ResumeData | undefined>) {
@@ -321,18 +329,7 @@ class DownloadTaskWorker extends TaskWorker {
           }
           if (this.taskCanResume) {
             let start = this.bytesTotal + this.startByte
-            await BDPlugin.doEnqueue(
-              this.applicationContext!,
-              this.task,
-              this.notificationConfigJsonString,
-              new ResumeData({
-                task: this.task,
-                data: this.tempFilePath,
-                requiredStartByte: start,
-                eTag: this.eTag
-              }),
-              1000
-            )
+            postReEnqueueMessage(this.task, this.notificationConfigJsonString, this.tempFilePath, start, this.eTag)
             return TaskStatus.paused
           }
           this.taskException = new TaskException(ExceptionType.connection, undefined, "Task timed out")
@@ -358,6 +355,29 @@ class DownloadTaskWorker extends TaskWorker {
 type WorkerParamValue = string | number | boolean | sendableContextManager.SendableContext
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
+
+function postReEnqueueMessage(
+  task: Task,
+  notificationConfigJsonString: string | undefined,
+  tempFilePath: string,
+  requiredStartByte: number,
+  eTag?: string
+) {
+  const resumeData = new ResumeData({
+    task,
+    data: tempFilePath ?? "",
+    requiredStartByte,
+    eTag,
+  });
+  const message: ReEnqueueMessage = {
+    command: "reEnqueue",
+    taskJson: TaskWorker.taskToJsonString(task),
+    notificationConfigJsonString,
+    resumeData,
+    initialDelayMillis: 1000,
+  };
+  workerPort.postMessageWithSharedSendable(message);
+}
 
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");

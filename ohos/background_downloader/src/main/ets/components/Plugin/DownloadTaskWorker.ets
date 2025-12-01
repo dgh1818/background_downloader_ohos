@@ -22,6 +22,14 @@ import { BusinessError } from '@kit.BasicServicesKit';
 
 let httpRequest:http.HttpRequest;
 
+interface ReEnqueueMessage {
+  command: "reEnqueue";
+  taskJson: string;
+  notificationConfigJsonString?: string;
+  resumeData?: ResumeData;
+  initialDelayMillis: number;
+}
+
 class DownloadTaskWorker extends TaskWorker {
   constructor(applicationContext: common.UIAbilityContext,
     workerParams: collections.Map<string, string | number | boolean | ResumeData | undefined>) {
@@ -344,7 +352,7 @@ class DownloadTaskWorker extends TaskWorker {
       });
 
       httpRequest.on("dataReceive", (chunk: ArrayBuffer) => {
-        console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "dataReceive len", chunk.byteLength, "contentLength", contentLength);
+        //console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "dataReceive len", chunk.byteLength, "contentLength", contentLength);
         if (!prepared || !task) {
           return;
         }
@@ -355,7 +363,7 @@ class DownloadTaskWorker extends TaskWorker {
           if (outputStream) {
             const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
             fs.writeSync(outputStream.fd, buffer);
-            console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write chunk bytes", bytes.byteLength, "total", this.bytesTotal);
+            //console.error(DownloadTaskWorker.DownloadTaskWorkerTag, "write chunk bytes", bytes.byteLength, "total", this.bytesTotal);
           }
         } catch (e) {
           let message = (e as BusinessError).message;
@@ -381,13 +389,13 @@ class DownloadTaskWorker extends TaskWorker {
             timeRemaining: -1000
           });
         }
-        console.error(
-          DownloadTaskWorker.DownloadTaskWorkerTag,
-          "dataReceiveProgress receivedSize",
-          received,
-          "totalSize",
-          total
-        );
+        // console.error(
+        //   DownloadTaskWorker.DownloadTaskWorkerTag,
+        //   "dataReceiveProgress receivedSize",
+        //   received,
+        //   "totalSize",
+        //   total
+        // );
       });
 
       httpRequest.on("dataEnd", async () => {
@@ -480,6 +488,29 @@ type WorkerParamValue = string | number | boolean | sendableContextManager.Senda
 
 const workerPort: ThreadWorkerGlobalScope = worker.workerPort;
 let currentTaskId:string
+
+function postReEnqueueMessage(
+  task: Task,
+  notificationConfigJsonString: string | undefined,
+  tempFilePath: string,
+  requiredStartByte: number,
+  eTag?: string
+) {
+  const resumeData = new ResumeData({
+    task,
+    data: tempFilePath ?? "",
+    requiredStartByte,
+    eTag,
+  });
+  const message: ReEnqueueMessage = {
+    command: "reEnqueue",
+    taskJson: TaskWorker.taskToJsonString(task),
+    notificationConfigJsonString,
+    resumeData,
+    initialDelayMillis: 1000,
+  };
+  workerPort.postMessageWithSharedSendable(message);
+}
 
 workerPort.onmessage = async (event: MessageEvents) => {
   console.error("enter on message");
