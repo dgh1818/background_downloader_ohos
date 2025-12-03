@@ -240,6 +240,8 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       if (!command) {
         return;
       }
+      // Ensure static workerShareableData is available for TaskWorker.* helpers
+      TaskWorker.workerShareableData = BDPlugin.workerShareableData;  //is it needed?? /To do
       try {
         const options: preferences.Options = { name: "DEFAULT" };
         const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);

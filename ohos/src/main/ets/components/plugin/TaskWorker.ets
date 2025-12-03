@@ -554,9 +554,9 @@ export class TaskWorker {
         let tasksMap = getTaskMap(prefs)
         console.error("getTaskMap success");
         tasksMap.delete(task.taskId)
-        const serializedTasks: Record<string, Task> = {};
+        const serializedTasks: Record<string, string> = {};
         tasksMap.forEach((value, key) => {
-          serializedTasks[key] = value;
+          serializedTasks[key] = TaskWorker.taskToJsonString(value);
         });
         prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
         console.error("putSync success");
@@ -852,7 +852,7 @@ export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task
       result.set(taskId, task);
     } catch (e) {
       let error = e as BusinessError;
-      console.error("Error deserializing task with id "+taskId+": "+error.message);
+      console.error("Error deserializing task with id "+taskId+": "+error.message + taskData);
       prefs.putSync(BDPlugin.keyTasksMap, "{}");
       prefs.flushSync();
     }
