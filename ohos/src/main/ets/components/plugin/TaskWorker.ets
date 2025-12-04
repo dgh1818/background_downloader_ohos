@@ -383,7 +383,7 @@ export class TaskWorker {
     mimeType?: string,
     charSet?: string,
   ) {
-    console.error("enter it");
+    
     const resolvedContext: common.UIAbilityContext | undefined = context ?? BDPlugin.uiContext
     let removedFromReEnqueue = false;
     let shouldSignalEnd = false;
@@ -514,6 +514,10 @@ export class TaskWorker {
     // remove task from persistent storage, clean up references to taskId
     // and invoke the onTaskFinishedCallback if necessary
     if (isFinal) {
+      // signal holding queue that this task finished so it can advance
+      if (BDPlugin.holdingQueue) {
+        await HoldingQueue.taskFinished(task);
+      }
       // clean notification config cache for this task
       await TaskWorker.workerShareableData!.withLock(() => {
         TaskWorker.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
