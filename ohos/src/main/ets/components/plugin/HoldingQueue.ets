@@ -29,7 +29,7 @@ export class HoldingQueue {
   private concurrent: number = 0;
   private concurrentByHost = new Map<string, number>();
   private concurrentByGroup = new Map<string, number>();
-  private queue: EnqueueItem[] = [];
+  public queue: EnqueueItem[] = [];
   // ArkTS 目前没有 Kotlin Channel 那样的“信号管道”，
   // 这里用一个 Promise 句柄来表示队列消费循环是否已经在运行。
   // 作用相当于 Android 版本里的 `processSignal` 协程或 iOS 里的 `processQueue` Task：

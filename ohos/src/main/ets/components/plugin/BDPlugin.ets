@@ -788,16 +788,27 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       console.error("sendableUIContext is error");
       return
     }
-    const rawTasks = JSON.parse(taskListJsonString) as Map<string, Task>;
-    rawTasks.forEach(async (value, key) => {
-      const task = value;
-      const bgChannel = BDPlugin.methodbackgroundChannel(this);
-      if (bgChannel !== undefined) {
-        BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
-      } else {
-        console.error(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
+      try {
+        const tasksPlain = JSON.parse(taskListJsonString) as Task[];
+        const tasks = tasksPlain.map((t) => Task.fromPlain(t as Task));
+        const notifConfigs = JSON.parse(notificationConfigListJsonString) as Array<NotificationConfig | undefined>;
+        console.error(BDPlugin.TAG, `methodEnqueueAll: parsed ${tasks.length} tasks, ${notifConfigs?.length ?? 0} configs`);
+        const bgChannel = BDPlugin.methodbackgroundChannel(this);
+        if (bgChannel !== undefined) {
+          tasks.forEach((task) => {
+            BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
+          });
+        } else {
+          tasks.forEach((task) => {
+            console.error(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
+          });
+        }
+        if (notifConfigs && notifConfigs.length !== tasks.length) {
+          console.error(BDPlugin.TAG, `methodEnqueueAll: tasks and configs length mismatch (${tasks.length} vs ${notifConfigs.length})`);
+        }
+      } catch (e) {
+        console.error(BDPlugin.TAG, `methodEnqueueAll: failed to parse tasks/configs: ${e}`);
       }
-    })
 
     let results = await methodEnqueueAll_task(taskListJsonString, notificationConfigListJsonString);
     result.success(results);

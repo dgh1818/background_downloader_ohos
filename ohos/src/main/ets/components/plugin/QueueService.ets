@@ -159,8 +159,7 @@ export class QueueService {
   }
 
   private static async dispatchBackgroundPost(bgPost: BackgroundPost): Promise<void> {
-    const channel = BDPlugin.bgChannelByTaskId.get(bgPost.task.taskId)
-      ?? BDPlugin.backgroundChannel
+    const channel = BDPlugin.methodbackgroundChannel(BDPlugin.latestPluginInstance, bgPost.task.taskId)
       ?? BDPlugin.firstBackgroundChannel;
     if (!channel) {
       console.info(TaskWorker.TAG, `Could not post ${bgPost.method} to background channel`);
