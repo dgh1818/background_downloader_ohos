@@ -32,8 +32,6 @@ export async function methodEnqueueAll_task(
     console.error(BDPlugin.TAG + " failed to parse notificationConfigListJsonString: " + e);
   }
 
-  // Ensure TaskWorker has access to shared data for status updates
-  TaskWorker.workerShareableData = BDPlugin.workerShareableData;
 
   for (const entry of entries) {
     if (!uiContext) {

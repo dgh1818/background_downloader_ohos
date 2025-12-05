@@ -176,7 +176,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       BDPlugin.workerShareableData.canceledTaskIds.delete(task.taskId);
       BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(task.taskId);
     });
-    console.error(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}8`);
+    console.error(BDPlugin.TAG, `Enqueuing task with id ${task.taskId}`);
 
     const parameters: Record<string, string | number | boolean> = {};
     parameters[TaskWorkerKey.keyTask] = TaskWorker.taskToJsonString(task) as string;
@@ -240,8 +240,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       if (!command) {
         return;
       }
-      // Ensure static workerShareableData is available for TaskWorker.* helpers
-      TaskWorker.workerShareableData = BDPlugin.workerShareableData;  //is it needed?? /To do
+      
       try {
         const options: preferences.Options = { name: "DEFAULT" };
         const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
@@ -593,7 +592,6 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
         return;
       }
       // Ensure TaskWorker has a shareable ref for cancellation updates
-      TaskWorker.workerShareableData = BDPlugin.workerShareableData;
       for (const id of taskIds) {
         const task = tasksMap.get(id);
         if (task) {
@@ -788,27 +786,27 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       console.error("sendableUIContext is error");
       return
     }
-      try {
-        const tasksPlain = JSON.parse(taskListJsonString) as Task[];
-        const tasks = tasksPlain.map((t) => Task.fromPlain(t as Task));
-        const notifConfigs = JSON.parse(notificationConfigListJsonString) as Array<NotificationConfig | undefined>;
-        console.error(BDPlugin.TAG, `methodEnqueueAll: parsed ${tasks.length} tasks, ${notifConfigs?.length ?? 0} configs`);
-        const bgChannel = BDPlugin.methodbackgroundChannel(this);
-        if (bgChannel !== undefined) {
-          tasks.forEach((task) => {
-            BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
-          });
-        } else {
-          tasks.forEach((task) => {
-            console.error(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
-          });
-        }
-        if (notifConfigs && notifConfigs.length !== tasks.length) {
-          console.error(BDPlugin.TAG, `methodEnqueueAll: tasks and configs length mismatch (${tasks.length} vs ${notifConfigs.length})`);
-        }
-      } catch (e) {
-        console.error(BDPlugin.TAG, `methodEnqueueAll: failed to parse tasks/configs: ${e}`);
+    try {
+      const tasksPlain = JSON.parse(taskListJsonString) as Task[];
+      const tasks = tasksPlain.map((t) => Task.fromPlain(t as Task));
+      const notifConfigs = JSON.parse(notificationConfigListJsonString) as Array<NotificationConfig | undefined>;
+      console.error(BDPlugin.TAG, `methodEnqueueAll: parsed ${tasks.length} tasks, ${notifConfigs?.length ?? 0} configs`);
+      const bgChannel = BDPlugin.methodbackgroundChannel(this);
+      if (bgChannel !== undefined) {
+        tasks.forEach((task) => {
+          BDPlugin.bgChannelByTaskId.set(task.taskId, bgChannel);
+        });
+      } else {
+        tasks.forEach((task) => {
+          console.error(BDPlugin.TAG, `Could not find backgroundChannel for taskId ${task.taskId}`);
+        });
       }
+      if (notifConfigs && notifConfigs.length !== tasks.length) {
+        console.error(BDPlugin.TAG, `methodEnqueueAll: tasks and configs length mismatch (${tasks.length} vs ${notifConfigs.length})`);
+      }
+    } catch (e) {
+      console.error(BDPlugin.TAG, `methodEnqueueAll: failed to parse tasks/configs: ${e}`);
+    }
 
     let results = await methodEnqueueAll_task(taskListJsonString, notificationConfigListJsonString);
     result.success(results);

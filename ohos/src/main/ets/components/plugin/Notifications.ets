@@ -135,7 +135,7 @@ export class NotificationService {
     }
     const notificationConfig = JSON.parse(notificationConfigJsonString) as NotificationConfig;
     const groupNotificationId = notificationConfig.groupNotificationId;
-    if (groupNotificationId.length !== 0) {
+    //if (groupNotificationId.length !== 0) {
       //const serializedTask = new SendableTask(item.task);
       NotificationService.createUpdateNotificationWorker(
         BDPlugin.uiContext!,
@@ -143,7 +143,7 @@ export class NotificationService {
         notificationConfigJsonString,
         success ? TaskStatus.enqueued : TaskStatus.failed
       );
-    }
+    //}
   }
 
   static createUpdateNotificationWorker(
@@ -236,6 +236,7 @@ export class NotificationService {
   }
 
   private static async sendMessageToWorker(message: UpdateNotificationSendableMessage): Promise<void> {
+    console.error(BDPlugin.TAG, `NotificationService.sendMessageToWorker: sending messageId=${message.messageId}`); 
     const workerInstance = NotificationService.ensureWorker();
     NotificationService.configureAckHandler(workerInstance);
     if (message.messageId === undefined) {

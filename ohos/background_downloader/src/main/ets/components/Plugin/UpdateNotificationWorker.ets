@@ -104,6 +104,7 @@ class UpdateNotificationWorker extends TaskWorker {
     const fileName = taskWorker.task?.filename ?? "";
     const progress = taskWorker.notificationProgress;
     const id = UpdateNotificationWorker.notificationIdForTask(taskWorker.task?.taskId);
+    const groupName = (notificationConfig.groupNotificationId ?? "").trim();
 
     const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
     console.error(BDPlugin.TAG, `UpdateNotificationWorker: progressPct=${progressPct}`);
@@ -127,6 +128,9 @@ class UpdateNotificationWorker extends TaskWorker {
         }
       }
     };
+    if (groupName.length > 0) {
+      request.groupName = groupName;
+    }
     try {
       notificationManager.publish(request);
     } catch (e) {
