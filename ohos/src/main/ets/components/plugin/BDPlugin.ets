@@ -240,7 +240,7 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       if (!command) {
         return;
       }
-      
+
       try {
         const options: preferences.Options = { name: "DEFAULT" };
         const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
@@ -458,8 +458,14 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
       case 'enqueueAll':
         this.methodEnqueueAll(call, result);
         break;
+      case 'reset':
+        this.methodReset(call, result);
+        break;
       case 'cancelTasksWithIds':
         this.methodCancelTasksWithIds(call, result);
+        break;
+      case 'allTasks':
+        this.methodAllTasks(call, result);
         break;
 
 
@@ -615,6 +621,70 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     } catch (e) {
       console.error(BDPlugin.TAG, `Failed to cancel tasks ${taskIds}: ${e}`);
       result.success(false);
+    }
+  }
+
+  /**
+   * Cancel and remove all tasks in the given group from holdingQueue and running workers.
+   * Returns number of tasks affected.
+   */
+  private async methodReset(call: MethodCall, result: MethodResult) {
+    const group = call.args as string;
+    let counter = 0;
+    try {
+      const options: preferences.Options = { name: 'DEFAULT' };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
+      const tasksMap = getTaskMap(prefs);
+
+      // remove queued tasks in holdingQueue
+      if (BDPlugin.holdingQueue) {
+        await BDPlugin.holdingQueue.stateMutex.lockAsync(async () => {
+          const enqueued = [...BDPlugin.holdingQueue!.enqueuedTaskIds];
+          enqueued.forEach((id) => {
+            const task = tasksMap.get(id);
+            if (task && task.group === group) {
+              const idx = BDPlugin.holdingQueue!.enqueuedTaskIds.indexOf(id);
+              if (idx >= 0) {
+                BDPlugin.holdingQueue!.enqueuedTaskIds.splice(idx, 1);
+                counter++;
+              }
+              BDPlugin.workerShareableData.canceledTaskIds.add(id);
+              BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(id);
+            }
+          });
+        });
+      }
+
+      // cancel running workers in this group
+      BDPlugin.runningWorkers.forEach((w, id) => {
+        const task = tasksMap.get(id);
+        if (task && task.group === group) {
+          try {
+            w.terminate();
+          } catch (_) {
+          }
+          BDPlugin.runningWorkers.delete(id);
+          counter++;
+          BDPlugin.workerShareableData.canceledTaskIds.add(id);
+          BDPlugin.workerShareableData.cancelUpdateSentForTaskId.delete(id);
+          TaskWorker.processStatusUpdate(
+            task,
+            TaskStatus.canceled,
+            prefs,
+            BDPlugin.uiContext,
+            undefined,
+            undefined,
+            undefined,
+            undefined
+          );
+        }
+      });
+
+      console.error(BDPlugin.TAG, `methodReset removed ${counter} tasks in group ${group}`);
+      result.success(counter);
+    } catch (e) {
+      console.error(BDPlugin.TAG, `Failed to reset group ${group}: ${e}`);
+      result.success(0);
     }
   }
 
@@ -827,6 +897,42 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     //     console.error(`execute methodEnqueueAll error: ${e.message}`);
     //     result.success([]);
     //   });
+  }
+
+  /**
+   * Returns JSON strings for all unfinished tasks, optionally filtered by group.
+   */
+  private async methodAllTasks(call: MethodCall, result: MethodResult) {
+    const group = call.args as string | undefined;
+    const tasksAsJson: Array<string> = [];
+    try {
+      const options: preferences.Options = { name: 'DEFAULT' };
+      const prefs = preferences.getPreferencesSync(BDPlugin.uiContext!, options);
+      const tasksMap = getTaskMap(prefs);
+      // include enqueued (holdingQueue) tasks
+      if (BDPlugin.holdingQueue) {
+        await BDPlugin.holdingQueue.stateMutex.lockAsync(async () => {
+          BDPlugin.holdingQueue!.enqueuedTaskIds.forEach((id) => {
+            const task = tasksMap.get(id);
+            if (task && (group === undefined || task.group === group)) {
+              tasksAsJson.push(TaskWorker.taskToJsonString(task));
+            }
+          });
+        });
+      }
+      // include running workers
+      BDPlugin.runningWorkers.forEach((_worker, id) => {
+        const task = tasksMap.get(id);
+        if (task && (group === undefined || task.group === group)) {
+          tasksAsJson.push(TaskWorker.taskToJsonString(task));
+        }
+      });
+      console.error(BDPlugin.TAG, `Returning ${tasksAsJson.length} unfinished tasks in group ${group ?? 'ALL'}`);
+      result.success(tasksAsJson);
+    } catch (e) {
+      console.error(BDPlugin.TAG, `methodAllTasks failed: ${e}`);
+      result.success([]);
+    }
   }
 }
 
