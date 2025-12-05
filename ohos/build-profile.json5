@@ -4,7 +4,8 @@
     "sourceOption": {
       "workers": [
         "./background_downloader/src/main/ets/components/Plugin/UpdateNotificationWorker.ets",
-        "./background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets"
+        "./background_downloader/src/main/ets/components/Plugin/DownloadTaskWorker.ets",
+        "./background_downloader/src/main/ets/components/Plugin/UploadTaskWorker.ets"
       ]
     },
   },
