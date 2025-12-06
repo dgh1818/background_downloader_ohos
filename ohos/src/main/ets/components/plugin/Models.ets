@@ -274,6 +274,28 @@ export class Task {
   filePath(context: common.UIAbilityContext, withFilename?: string): string {
     if (this.isMultiUploadTask() && withFilename === undefined) return "";
     const filenameToUse = withFilename ?? this.filename;
+
+    // For upload tasks, respect absolute paths (or file://) passed in directory/filename.
+    if (this.isUploadTask()) {
+      const dir = this.directory ?? "";
+      console.error("Upload task filePath, dir=" + dir + " filename=" + filenameToUse);
+      const looksAbsolute = (p: string): boolean => {
+        return p.startsWith("/") || p.startsWith("data/") || p.startsWith("storage/") || p.startsWith("media/");
+      };
+      if (filenameToUse.startsWith("file://")) {
+        return filenameToUse.substring("file://".length);
+      }
+      if (looksAbsolute(filenameToUse)) {
+        return filenameToUse.startsWith("/") ? filenameToUse : `/${filenameToUse}`;
+      }
+      const trimmedDir = dir.startsWith("file://") ? dir.substring("file://".length) : dir;
+      if (looksAbsolute(trimmedDir)) {
+        const absDir = trimmedDir.startsWith("/") ? trimmedDir : `/${trimmedDir}`;
+        return `${absDir}/${filenameToUse}`;
+      }
+      // fall through to default behaviour if no absolute component was provided
+    }
+
     const baseDir = PathUtils.getFilesDir(context.getApplicationContext()) + '/flutter';
     if (baseDir === undefined) {
       throw new Error("External storage is requested but not available");

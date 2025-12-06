@@ -372,12 +372,15 @@ export default class BDPlugin implements FlutterPlugin, MethodCallHandler, Abili
     BDPlugin.prefsLock.lockAsync(() => {
       const options: preferences.Options = { name: "DEFAULT" };
       const prefs = preferences.getPreferencesSync(BDPlugin.uiContext, options);
+      console.error(BDPlugin.TAG, `Storing task with id ${task.taskId} to prefs`);
       const tasksMap = getTaskMap(prefs);
+      console.error(BDPlugin.TAG, `Loaded tasks map with ${tasksMap.size} entries`);
       tasksMap.set(task.taskId, task);
       // Store as plain object for compatibility with existing reads
       const serializedTasks: Record<string, string> = {};
       tasksMap.forEach((value, key) => {
-        serializedTasks[key] = TaskWorker.taskToJsonString(task);
+        console.error("Storing task id in prefs:" + key + " value:"+value);
+        serializedTasks[key] = TaskWorker.taskToJsonString(value);
       });
       prefs.putSync(BDPlugin.keyTasksMap, JSON.stringify(serializedTasks));
       prefs.flushSync();

@@ -52,19 +52,22 @@ class UploadTaskWorker extends TaskWorker {
 
   // Override process: immediately fail with not-implemented error
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  public async process(httpOptions: http.HttpRequestOptions, header: Record<string, string>): Promise<TaskStatus> {
+  override async process(httpOptions: http.HttpRequestOptions, header: Record<string, string>): Promise<TaskStatus> {
+    console.error(UploadTaskWorker.UploadTaskWorkerTag, "enter upload process");
     if (!this.task) {
+      console.error(UploadTaskWorker.UploadTaskWorkerTag, "no task available");
       return TaskStatus.failed;
     }
-    // Simple, non-streaming upload implementation:
-    // 1) Read file into memory
-    // 2) POST/PUT with extraData
+    // Multipart upload implementation using filePath
     try {
       const filePath = this.task.filePath(this.applicationContext!);
-      let stat:fs.Stat;
+      console.error("filePath=" + filePath);
+      let stat: fs.Stat;
       try {
         stat = fs.statSync(filePath);
+        console.error("fs.statSync success")
       } catch (_e) {
+        console.error("fs.statSync error")
         this.taskException = new TaskException(
           ExceptionType.fileSystem,
           undefined,
@@ -72,7 +75,11 @@ class UploadTaskWorker extends TaskWorker {
         );
         return TaskStatus.failed;
       }
+
+
+      console.error(UploadTaskWorker.UploadTaskWorkerTag, `Uploading file at path: ${filePath}, size: ${stat.size} bytes`);
       if (!stat.isFile()) {
+        console.error("!stat.isFile()");
         this.taskException = new TaskException(
           ExceptionType.fileSystem,
           undefined,
@@ -80,12 +87,8 @@ class UploadTaskWorker extends TaskWorker {
         );
         return TaskStatus.failed;
       }
-      const fd = fs.openSync(filePath, fs.OpenMode.READ_WRITE);
-      const buf = new ArrayBuffer(stat.size);
-      fs.readSync(fd.fd, buf);
-      fs.closeSync(fd);
 
-      // Build request options
+      // Build request options + multipart body
       const method =
         this.task.httpRequestMethod === 'PUT'
           ? http.RequestMethod.PUT
@@ -95,16 +98,35 @@ class UploadTaskWorker extends TaskWorker {
       Object.keys(header).forEach((key) => {
         headers[key] = header[key];
       });
-      if (this.task.mimeType && this.task.mimeType.length > 0 && headers['Content-Type'] === undefined) {
-        headers['Content-Type'] = this.task.mimeType;
-      }
 
-      headers['Content-Length'] = `${buf.byteLength}`;
+      const formParts: Array<http.MultiFormData> = [];
+      // add additional fields if present
+      if (this.task.fields && this.task.fields.size > 0) {
+        this.task.fields.forEach((value, key) => {
+          formParts.push({
+            name: key,
+            contentType: 'text/plain',
+            data: `${value}`,
+            remoteFileName: undefined
+          });
+        });
+      }
+      // file part
+      const fileFieldName = this.task.fileField && this.task.fileField.length > 0 ? this.task.fileField : 'file';
+      const contentType = this.task.mimeType && this.task.mimeType.length > 0
+        ? this.task.mimeType
+        : 'application/octet-stream';
+      formParts.push({
+        name: fileFieldName,
+        contentType: contentType,
+        filePath: filePath,
+        remoteFileName: this.task.filename
+      });
 
       const options: http.HttpRequestOptions = {
         method,
         header: headers,
-        extraData: buf,
+        multiFormDataList: formParts,
         expectDataType: http.HttpDataType.STRING,
       };
 
@@ -114,7 +136,7 @@ class UploadTaskWorker extends TaskWorker {
       workerPort.postMessage({
         command: 'progressUpdate',
         progress: 0.0,
-        expectedFileSize: buf.byteLength,
+        expectedFileSize: stat.size,
         taskJson: TaskWorker.taskToJsonString(this.task),
         downloadSpeed: -1,
         timeRemaining: -1000,
@@ -122,7 +144,7 @@ class UploadTaskWorker extends TaskWorker {
 
       request.on('dataSendProgress', (info: http.DataSendProgressInfo) => {
         const sent = info.sendSize ?? 0;
-        const total = info.totalSize ?? buf.byteLength;
+        const total = info.totalSize ?? stat.size;
         if (total <= 0) {
           return;
         }
@@ -167,7 +189,7 @@ class UploadTaskWorker extends TaskWorker {
         workerPort.postMessage({
           command: 'progressUpdate',
           progress: 1.0,
-          expectedFileSize: buf.byteLength,
+          expectedFileSize: stat.size,
           taskJson: TaskWorker.taskToJsonString(this.task),
           downloadSpeed: -1,
           timeRemaining: -1000,
@@ -198,6 +220,7 @@ workerPort.onmessage = async (event: MessageEvents) => {
   let workercommand = event.data as WorkerCommand;
 
   let command = workercommand.command;
+  console.error(UploadTaskWorker.UploadTaskWorkerTag, `UploadTaskWorker: received message with command=${command}`);
   let sendableUIContext = workercommand.sendableUIContext;
   let taskWorkerData = workercommand.taskWorkerData;
   let workerShareableData = workercommand.workerShareableData;

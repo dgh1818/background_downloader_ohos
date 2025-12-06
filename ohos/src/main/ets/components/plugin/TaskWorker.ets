@@ -383,7 +383,6 @@ export class TaskWorker {
     mimeType?: string,
     charSet?: string,
   ) {
-    
     const resolvedContext: common.UIAbilityContext | undefined = context ?? BDPlugin.uiContext
     let removedFromReEnqueue = false;
     let shouldSignalEnd = false;
@@ -519,8 +518,8 @@ export class TaskWorker {
         await HoldingQueue.taskFinished(task);
       }
       // clean notification config cache for this task
-      await TaskWorker.workerShareableData!.withLock(() => {
-        TaskWorker.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
+      await BDPlugin.workerShareableData!.withLock(() => {
+        BDPlugin.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
       });
       if (modifiedStatus == TaskStatus.failed as number) {
         // Cancel the WorkManager job.
