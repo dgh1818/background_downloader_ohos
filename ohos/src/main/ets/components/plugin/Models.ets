@@ -291,6 +291,7 @@ export class Task {
       const trimmedDir = dir.startsWith("file://") ? dir.substring("file://".length) : dir;
       if (looksAbsolute(trimmedDir)) {
         const absDir = trimmedDir.startsWith("/") ? trimmedDir : `/${trimmedDir}`;
+        //console.error("Upload task absolute dir, path=" + absDir + "/" + filenameToUse);
         return `${absDir}/${filenameToUse}`;
       }
       // fall through to default behaviour if no absolute component was provided

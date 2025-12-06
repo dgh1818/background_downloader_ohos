@@ -660,8 +660,11 @@ export class TaskWorker {
         //header: headerRecord,
         connectTimeout: requestTimeoutSeconds*1000,
         usingProxy:useProxy?proxy:false,
-        extraData: this.task.post,
       };
+      // Only pass extraData for download/data tasks; upload workers build their own bodies
+      if (!this.task.isUploadTask() && this.task.post !== undefined) {
+        httpOptions.extraData = this.task.post;
+      }
 
       let header:Record<string,string> = {};
       this.task.headers.forEach((value, key) => {
@@ -695,18 +698,14 @@ export class TaskWorker {
       return TaskStatus.failed;
     }
 
-    const options: http.HttpRequestOptions = {}
-
     try {
       if ((this.task.isDownloadTask() || this.task.isDataTask()) && this.task.post != undefined) {
         const encoder = new util.TextEncoder();
-        let result = encoder.encodeInto(this.task.post);
-
-
-        httpOptions.extraData = result;
+        const encoded = encoder.encodeInto(this.task.post);
+        httpOptions.extraData = encoded;
         httpOptions.method = http.RequestMethod.POST;
-
-
+        // align with Kotlin's setFixedLengthStreamingMode
+        header["Content-Length"] = `${encoded.byteLength}`;
       }
       return this.process(httpOptions,header)
     } catch (e) {
