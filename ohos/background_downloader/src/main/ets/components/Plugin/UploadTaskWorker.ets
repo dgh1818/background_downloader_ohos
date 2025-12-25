@@ -425,7 +425,7 @@ workerPort.onmessage = async (event: MessageEvents) => {
       workerPort.postMessage({
         command: 'statusUpdate',
         status: TaskStatus.running,
-        taskJson: taskToJsonString(worker.task!),
+        taskJson: TaskWorker.taskToJsonString(worker.task!),
       });
 
       let status = await worker.startDoTask();
