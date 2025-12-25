@@ -583,6 +583,11 @@ workerPort.onmessage = async (event: MessageEvents) => {
       worker.eTag = resumeETag
       const prefOptions: preferences.Options = { name: 'DEFAULT' }
       worker.prefs = preferences.getPreferencesSync(uiContext, prefOptions)
+      workerPort.postMessage({
+        command: "statusUpdate",
+        status: TaskStatus.running,
+        taskJson: taskToJsonString(worker.task!),
+      });
       console.error("startWork: about to call startDoTask");
       let status = await worker.startDoTask();
       workerPort.postMessage({
