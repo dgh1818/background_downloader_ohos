@@ -1,6 +1,6 @@
 import {Auth} from './Auth'
 import { ArrayList, collections, lang, uri, url } from '@kit.ArkTS';
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, fileUri } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 import { suggestFilename } from './Helper';
 import { PathUtils } from '@ohos/flutter_ohos';
@@ -282,13 +282,16 @@ export class Task {
       const looksAbsolute = (p: string): boolean => {
         return p.startsWith("/") || p.startsWith("data/") || p.startsWith("storage/") || p.startsWith("media/");
       };
+      const resolveFileUriPath = (value: string): string => {
+        return value.startsWith("file://") ? new fileUri.FileUri(value).path : value;
+      };
       if (filenameToUse.startsWith("file://")) {
-        return filenameToUse.substring("file://".length);
+        return resolveFileUriPath(filenameToUse);
       }
       if (looksAbsolute(filenameToUse)) {
         return filenameToUse.startsWith("/") ? filenameToUse : `/${filenameToUse}`;
       }
-      const trimmedDir = dir.startsWith("file://") ? dir.substring("file://".length) : dir;
+      const trimmedDir = resolveFileUriPath(dir);
       if (looksAbsolute(trimmedDir)) {
         const absDir = trimmedDir.startsWith("/") ? trimmedDir : `/${trimmedDir}`;
         //console.error("Upload task absolute dir, path=" + absDir + "/" + filenameToUse);
