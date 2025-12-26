@@ -1,4 +1,4 @@
-import { common, sendableContextManager } from '@kit.AbilityKit';
+﻿import { common, sendableContextManager } from '@kit.AbilityKit';
 import { collections, MessageEvents, ThreadWorkerGlobalScope, worker } from '@kit.ArkTS';
 import { Task, TaskStatus } from '../../../../../../src/main/ets/components/plugin/Models';
 import { TaskWorker } from '../../../../../../src/main/ets/components/plugin/TaskWorker';
@@ -108,6 +108,12 @@ class UpdateNotificationWorker extends TaskWorker {
 
     const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
     console.error(BDPlugin.TAG, `UpdateNotificationWorker: progressPct=${progressPct}`);
+
+    if(taskStatus == TaskStatus.complete) {
+      await notificationManager.cancel(id);
+      return;
+    }
+
     const request: notificationManager.NotificationRequest = {
       id: id,
       groupName: "immich",

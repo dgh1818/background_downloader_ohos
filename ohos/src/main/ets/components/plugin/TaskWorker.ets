@@ -1,4 +1,4 @@
-import { collections, ErrorEvent, MessageEvents, taskpool, ThreadWorkerGlobalScope, util, worker } from '@kit.ArkTS'
+﻿import { collections, ErrorEvent, MessageEvents, taskpool, ThreadWorkerGlobalScope, util, worker } from '@kit.ArkTS'
 import { ExceptionType,
   ResumeData,
   Task, TaskException,
@@ -468,7 +468,7 @@ export class TaskWorker {
 
     console.error("leave switch (modifiedStatus)");
 
-    const isFinal = TaskStatus_fun.isFinalState(modifiedStatus)
+    const isFinal = modifiedStatus == TaskStatus.complete || modifiedStatus == TaskStatus.failed || modifiedStatus == TaskStatus.notFound || modifiedStatus == TaskStatus.canceled;
     console.error("1");
     const includeStatusCode =
       modifiedStatus == TaskStatus.complete || modifiedStatus == TaskStatus.notFound
@@ -518,9 +518,7 @@ export class TaskWorker {
         await HoldingQueue.taskFinished(task);
       }
       // clean notification config cache for this task
-      await BDPlugin.workerShareableData!.withLock(() => {
-        BDPlugin.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
-      });
+      
       if (modifiedStatus == TaskStatus.failed as number) {
         // Cancel the WorkManager job.
         // This is to avoid the WorkManager restarting a job that was
@@ -592,6 +590,12 @@ export class TaskWorker {
       }
     } catch (_) {
     }
+
+    if(isFinal) {
+      await BDPlugin.workerShareableData!.withLock(() => {
+        BDPlugin.workerShareableData!.notificationConfigJsonStrings.delete(task.taskId);
+      });
+    }
   }
 
   /** Return true if we can send a cancellation for this task
@@ -603,15 +607,19 @@ export class TaskWorker {
   private static async canSendCancellation(task: Task): Promise<boolean> {
     let now = systemDateTime.getTime(false);
     const filteredEntries: Array<[string, number]> = []
-    await TaskWorker.workerShareableData!.withLock(() => {
-      TaskWorker.workerShareableData!.cancelUpdateSentForTaskId.forEach((ts: number, key: string) => {
+    if (!BDPlugin.workerShareableData) {
+      console.error(TaskWorker.TAG, "workerShareableData missing; allowing cancellation update");
+      return true;
+    }
+    await BDPlugin.workerShareableData.withLock(() => {
+      BDPlugin.workerShareableData.cancelUpdateSentForTaskId.forEach((ts: number, key: string) => {
         if (now - ts < 3000) {
           filteredEntries.push([key, ts])
         }
       })
-      TaskWorker.workerShareableData!.cancelUpdateSentForTaskId = new collections.Map(filteredEntries)
+      BDPlugin.workerShareableData.cancelUpdateSentForTaskId = new collections.Map(filteredEntries)
     })
-    return TaskWorker.workerShareableData!.cancelUpdateSentForTaskId.get(task.taskId) == undefined;
+    return BDPlugin.workerShareableData.cancelUpdateSentForTaskId.get(task.taskId) == undefined;
   }
 
   /**
@@ -882,7 +890,6 @@ export function getTaskMap(prefs: dataPreferences.Preferences): Map<string, Task
 // workerPort.onerror = (err: ErrorEvent) => {
 //   console.error('workerPort onerror err is: ', err.message);
 // }
-
 
 
 
