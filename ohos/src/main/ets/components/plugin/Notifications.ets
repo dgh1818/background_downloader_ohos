@@ -290,7 +290,7 @@ export class NotificationService {
 
     const progressPct = progress >= 0 && progress <= 1 ? Math.round(progress * 100) : -1;
     console.error('NotificationService', `updateNotification: progressPct=${progressPct}`);
-    if(taskStatus == TaskStatus.complete) {
+    if(taskStatus == TaskStatus.complete || taskStatus == TaskStatus.canceled) {
       await notificationManager.cancel(id);
       return;
     }
